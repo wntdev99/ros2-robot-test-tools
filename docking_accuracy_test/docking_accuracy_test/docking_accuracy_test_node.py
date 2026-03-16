@@ -264,16 +264,10 @@ class DockingAccuracyTestNode(Node):
         self._results = []  # dict 목록
 
         # 결과 저장 경로
-        pkg_root = os.path.join(
-            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-        )
-        # ament_python 설치 환경에서 패키지 루트를 src 디렉토리로 설정
-        self._result_dir = os.path.join(
-            '/home/jeongmin/ros2_ws/src/temp_package/docking_accuracy_test/result'
-        )
-        os.makedirs(self._result_dir, exist_ok=True)
-
+        _base_result_dir = '/home/jeongmin/ros2_ws/src/temp_package/docking_accuracy_test/result'
         self._timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        self._result_dir = os.path.join(_base_result_dir, self._timestamp)
+        os.makedirs(self._result_dir, exist_ok=True)
         # CSV: 세션 누적 파일 (append), PNG: 세션별 파일 (타임스탬프)
         self._csv_path = os.path.join(self._result_dir, 'docking_accuracy_results.csv')
         self._png_path = os.path.join(
