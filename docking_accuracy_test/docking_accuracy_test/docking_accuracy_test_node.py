@@ -942,9 +942,9 @@ class DockingAccuracyTestNode(Node):
             self.get_logger().error(f'matplotlib import 실패: {e}')
             return
 
-        fig = plt.figure(figsize=(16, 8))
-        gs = fig.add_gridspec(2, 2, width_ratios=[1.2, 0.8], hspace=0.4)
-        fig.suptitle('Docking Accuracy Test Results', fontsize=14)
+        fig = plt.figure(figsize=(20, 10), constrained_layout=True)
+        gs = fig.add_gridspec(2, 2, width_ratios=[1.3, 0.7], hspace=0.45, wspace=0.3)
+        fig.suptitle('Docking Accuracy Test Results', fontsize=15, fontweight='bold')
 
         # ── subplot 1: Top-down 2D (좌측 전체) ──────────────────
         ax1 = fig.add_subplot(gs[:, 0])
@@ -1071,7 +1071,7 @@ class DockingAccuracyTestNode(Node):
         gt_y_cm = [r['gt_y_error_m'] * 100 for r in self._results]
 
         x = np.arange(len(trial_nums))
-        w = 0.3  # 2개 bar
+        w = min(0.32, 0.6 / max(len(trial_nums), 1))  # trial 수에 따라 너비 조정
 
         ax2.bar(x - 0.5*w, gt_x_cm, w, label='GT x [cm]', color='#e74c3c', alpha=0.85)
         ax2.bar(x + 0.5*w, gt_y_cm, w, label='GT y [cm]', color='#c0392b', alpha=0.85)
@@ -1094,6 +1094,7 @@ class DockingAccuracyTestNode(Node):
         ax2.set_ylabel('Error [cm] (signed)')
         ax2.set_xticks(x)
         ax2.set_xticklabels([f'T{n}' for n in trial_nums])
+        ax2.margins(y=0.25)
         ax2.legend(fontsize=7)
         ax2.grid(True, axis='y', alpha=0.3)
 
@@ -1103,7 +1104,8 @@ class DockingAccuracyTestNode(Node):
 
         gt_yaw_deg = [r['gt_yaw_error_rad'] * 180 / math.pi for r in self._results]
 
-        ax3.bar(x, gt_yaw_deg, 0.5, label='GT yaw [deg]', color='#e67e22', alpha=0.85)
+        ax3.bar(x, gt_yaw_deg, min(0.45, 0.7 / max(len(trial_nums), 1)),
+                label='GT yaw [deg]', color='#e67e22', alpha=0.85)
 
         m_yaw = valid_mean(gt_yaw_deg)
         if m_yaw is not None:
@@ -1115,10 +1117,10 @@ class DockingAccuracyTestNode(Node):
         ax3.set_ylabel('Error [deg] (signed)')
         ax3.set_xticks(x)
         ax3.set_xticklabels([f'T{n}' for n in trial_nums])
+        ax3.margins(y=0.25)
         ax3.legend(fontsize=7)
         ax3.grid(True, axis='y', alpha=0.3)
 
-        plt.tight_layout()
         plt.savefig(self._png_path, dpi=150, bbox_inches='tight')
         plt.close(fig)
         self.get_logger().info(f'PNG 저장 완료: {self._png_path}')
