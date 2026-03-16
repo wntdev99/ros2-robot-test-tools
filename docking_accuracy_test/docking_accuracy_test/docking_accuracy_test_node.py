@@ -939,11 +939,12 @@ class DockingAccuracyTestNode(Node):
             return
 
         fig = plt.figure(figsize=(20, 13), constrained_layout=True)
-        gs = fig.add_gridspec(3, 2, width_ratios=[1.3, 0.7], hspace=0.45, wspace=0.3)
+        outer_gs = fig.add_gridspec(1, 2, width_ratios=[1.3, 0.7], wspace=0.3)
+        inner_gs = outer_gs[0, 1].subgridspec(3, 1, hspace=0.45)
         fig.suptitle('Docking Accuracy Test Results', fontsize=15, fontweight='bold')
 
         # ── subplot 1: Top-down 2D (좌측 전체) ──────────────────
-        ax1 = fig.add_subplot(gs[:, 0])
+        ax1 = fig.add_subplot(outer_gs[0, 0])
         ax1.set_title('Top-down View (map frame)')
         ax1.set_xlabel('X [m]')
         ax1.set_ylabel('Y [m]')
@@ -1086,7 +1087,7 @@ class DockingAccuracyTestNode(Node):
                    framealpha=0.85, edgecolor='gray')
 
         # ── subplot 2: GT x 오차 막대 그래프 (우측 상단) ──────────
-        ax2 = fig.add_subplot(gs[0, 1])
+        ax2 = fig.add_subplot(inner_gs[0])
         ax2.set_title('GT X Error per Trial')
 
         trial_nums = [r['trial'] for r in self._results]
@@ -1120,7 +1121,7 @@ class DockingAccuracyTestNode(Node):
         ax2.grid(True, axis='y', alpha=0.3)
 
         # ── subplot 3: GT y 오차 막대 그래프 (우측 중단) ───────────
-        ax3 = fig.add_subplot(gs[1, 1])
+        ax3 = fig.add_subplot(inner_gs[1])
         ax3.set_title('GT Y Error per Trial')
 
         ax3.bar(x, gt_y_cm, w, label='GT y [cm]', color='#2980b9', alpha=0.85)
@@ -1147,7 +1148,7 @@ class DockingAccuracyTestNode(Node):
         ax3.grid(True, axis='y', alpha=0.3)
 
         # ── subplot 4: GT yaw 오차 막대 그래프 (우측 하단) ──────────
-        ax4 = fig.add_subplot(gs[2, 1])
+        ax4 = fig.add_subplot(inner_gs[2])
         ax4.set_title('GT Yaw Error per Trial')
 
         gt_yaw_deg = [r['gt_yaw_error_rad'] * 180 / math.pi for r in self._results]
