@@ -158,15 +158,18 @@ def compute_entrance_angle_deg(footprint_shape, gt_x, gt_y, gt_yaw) -> float:
     return data['angle_deg'] if data is not None else float('nan')
 
 
-def _compute_dock_alignment(tf_abs):
-    """dock line 중심과 front_face 중심 사이의 x/y/yaw 오차 계산.
-    _entrance_angle_data 결과를 재사용 (중복 계산 없음).
+def _compute_dock_alignment(tf_abs, tf_target):
+    """완벽 도킹 목표 front_face(dock line) vs 실제 front_face 사이의 x/y/yaw 오차 계산.
+
+    tf_target: target_pose 기준으로 변환한 footprint (완벽 도킹 위치)
+    tf_abs:    gt_pose 기준으로 변환한 footprint (실제 도킹 위치)
     """
     data = _entrance_angle_data(tf_abs)
-    if data is None:
+    target_data = _entrance_angle_data(tf_target)
+    if data is None or target_data is None:
         return None
 
-    # front_face 끝점 및 중심
+    # 실제 front_face 끝점 및 중심
     fp1, fp2 = data['fp1'], data['fp2']
     face_cx = (fp1[0] + fp2[0]) / 2.0
     face_cy = (fp1[1] + fp2[1]) / 2.0
@@ -175,11 +178,10 @@ def _compute_dock_alignment(tf_abs):
     fv_len = math.sqrt((fp2[0] - fp1[0])**2 + (fp2[1] - fp1[1])**2)
     dock_half_len = fv_len / 2.0
 
-    # dock line 중심
-    # x: V 입구선 x (완벽 도킹 시 front_face가 위치해야 하는 고정 x)
-    # y: V 대칭축 y = (V_SHAPE_LEFT[1] + V_SHAPE_RIGHT[1]) / 2
-    dock_line_cx = V_SHAPE_LEFT[0]  # == V_SHAPE_RIGHT[0] == 3.25
-    dock_line_cy = (V_SHAPE_LEFT[1] + V_SHAPE_RIGHT[1]) / 2.0
+    # dock line 중심 = target_pose 기준 front_face 중심 (완벽 도킹 위치)
+    tfp1, tfp2 = target_data['fp1'], target_data['fp2']
+    dock_line_cx = (tfp1[0] + tfp2[0]) / 2.0
+    dock_line_cy = (tfp1[1] + tfp2[1]) / 2.0
 
     dx_cm = (dock_line_cx - face_cx) * 100.0
     dy_cm = (dock_line_cy - face_cy) * 100.0
@@ -197,39 +199,10 @@ def _compute_dock_alignment(tf_abs):
     )
 
 
-def _draw_entrance_angle(ax, tf_abs):
-    """_entrance_angle_data 결과를 matplotlib Axes에 시각화."""
-    data = _entrance_angle_data(tf_abs)
-    if data is None:
-        return
-    cx, cy = data['cx'], data['cy']
-    sp1, sp2 = data['sp1'], data['sp2']
-    angle_deg = data['angle_deg']
-    theta_start, diff = data['theta_start'], data['diff']
 
-    ax.plot([sp1[0], sp2[0]], [sp1[1], sp2[1]],
-            color='magenta', linewidth=2.0, zorder=9)
-
-    arc_r = 0.08
-    steps = 30
-    thetas = [theta_start + diff * k / steps for k in range(steps + 1)]
-    ax.plot(
-        [cx + arc_r * math.cos(t) for t in thetas],
-        [cy + arc_r * math.sin(t) for t in thetas],
-        color='magenta', linewidth=1.5, zorder=10,
-    )
-
-    mid_theta = theta_start + diff / 2
-    tx = cx + arc_r * 2.4 * math.cos(mid_theta)
-    ty = cy + arc_r * 2.4 * math.sin(mid_theta)
-    ax.text(tx, ty, f'{angle_deg:.1f}°', fontsize=9, color='magenta',
-            ha='center', va='center', zorder=11,
-            bbox=dict(facecolor='white', alpha=0.7, edgecolor='none', pad=1))
-
-
-def _draw_dock_alignment(ax, tf_abs, color, y_offset=0.0):
+def _draw_dock_alignment(ax, tf_abs, tf_target, color, y_offset=0.0):
     """dock line(cyan), front_face 중심 마커, 정렬 오차 텍스트를 ax에 그린다."""
-    aln = _compute_dock_alignment(tf_abs)
+    aln = _compute_dock_alignment(tf_abs, tf_target)
     if aln is None:
         return
 
@@ -1004,7 +977,7 @@ class DockingAccuracyTestNode(Node):
             if math.isnan(row['gt_x']):
                 continue
 
-            # footprint polygon
+            # footprint polygon (GT 자세 기준)
             tf = None
             if footprint_shape is not None:
                 tf = []
@@ -1017,6 +990,16 @@ class DockingAccuracyTestNode(Node):
             else:
                 ax1.plot(row['gt_x'], row['gt_y'], 'o', color=color,
                          markersize=8, alpha=0.8, zorder=7)
+
+            # footprint polygon (target 자세 기준 — dock line 계산용)
+            tf_target = None
+            if (footprint_shape is not None
+                    and not math.isnan(row['target_x'])
+                    and not math.isnan(row['target_yaw'])):
+                tf_target = []
+                for fx, fy in footprint_shape:
+                    rx, ry = rotate_point(fx, fy, row['target_yaw'])
+                    tf_target.append((row['target_x'] + rx, row['target_y'] + ry))
 
             # yaw 방향 벡터 (화살표)
             arrow_len = 0.28
@@ -1031,16 +1014,12 @@ class DockingAccuracyTestNode(Node):
             )
 
             # V자 입구 선 → 최근접 꼭지점에 평행이동 + 앞부분 라인과 각도 표시
-            if tf is not None:
+            if tf is not None and tf_target is not None:
                 if not entrance_ref_labeled:
-                    # legend용 더미 선 (magenta, cyan)
-                    ax1.plot([], [], color='magenta', linewidth=2,
-                             label='Entrance ref + angle')
                     ax1.plot([], [], color='cyan', linewidth=2.5,
                              label='Dock line + alignment error')
                     entrance_ref_labeled = True
-                _draw_entrance_angle(ax1, tf)
-                _draw_dock_alignment(ax1, tf, color, y_offset=i * 0.14)
+                _draw_dock_alignment(ax1, tf, tf_target, color, y_offset=i * 0.14)
 
         # top-down view: 데이터 범위에 맞게 자동 줌
         _bx = [V_SHAPE_TIP[0], V_SHAPE_LEFT[0], V_SHAPE_RIGHT[0]]
