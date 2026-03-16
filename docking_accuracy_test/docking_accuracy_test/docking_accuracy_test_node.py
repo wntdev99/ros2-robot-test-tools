@@ -241,7 +241,9 @@ class DockingAccuracyTestNode(Node):
 
         # 파라미터
         self.declare_parameter('n_trials', 5)
+        self.declare_parameter('auto_proceed_timeout', 30)
         self._n_trials = self.get_parameter('n_trials').value
+        self._auto_proceed_timeout = self.get_parameter('auto_proceed_timeout').value
 
         # 최신 센서 데이터
         self._latest_gt = None           # Odometry (GT)
@@ -521,13 +523,29 @@ class DockingAccuracyTestNode(Node):
                 f'entrance={row["entrance_angle_deg"]:.2f}deg'
             )
 
-            # 10. 사용자 입력 대기
+            # 10. 사용자 입력 대기 (타임아웃 시 자동 진행)
             if trial_idx < self._n_trials - 1:
+                timeout = self._auto_proceed_timeout
                 self.get_logger().info(
-                    "Enter: 다음 테스트 | 'q'+Enter: 종료"
+                    f"Enter: 다음 테스트 | 'q'+Enter: 종료 "
+                    f"| {timeout}초 후 자동 진행"
                 )
                 self._input_event.clear()
-                self._input_event.wait()
+                elapsed = 0
+                check_interval = 5
+                while elapsed < timeout:
+                    remain = timeout - elapsed
+                    got = self._input_event.wait(timeout=min(check_interval, remain))
+                    if got:
+                        break
+                    elapsed += check_interval
+                    if elapsed < timeout:
+                        self.get_logger().info(
+                            f'입력 대기 중... ({timeout - elapsed}초 후 자동 진행)'
+                        )
+
+                if not self._input_event.is_set():
+                    self.get_logger().info('타임아웃: 자동으로 다음 테스트를 진행합니다.')
 
                 if self._input_quit:
                     self.get_logger().info('사용자 요청으로 테스트 중단.')
