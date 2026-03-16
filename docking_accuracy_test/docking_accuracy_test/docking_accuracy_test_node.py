@@ -869,11 +869,12 @@ class DockingAccuracyTestNode(Node):
             self.get_logger().error(f'matplotlib import 실패: {e}')
             return
 
-        fig, axes = plt.subplots(1, 2, figsize=(16, 8))
+        fig = plt.figure(figsize=(16, 8))
+        gs = fig.add_gridspec(2, 2, width_ratios=[1.2, 0.8], hspace=0.4)
         fig.suptitle('Docking Accuracy Test Results', fontsize=14)
 
-        # ── subplot 1: Top-down 2D ──────────────────────────────
-        ax1 = axes[0]
+        # ── subplot 1: Top-down 2D (좌측 전체) ──────────────────
+        ax1 = fig.add_subplot(gs[:, 0])
         ax1.set_title('Top-down View (map frame)')
         ax1.set_xlabel('X [m]')
         ax1.set_ylabel('Y [m]')
@@ -967,36 +968,27 @@ class DockingAccuracyTestNode(Node):
 
         ax1.legend(loc='upper left', fontsize=7)
 
-        # ── subplot 2: 오차 막대 그래프 (x/y/yaw 분리) ──────────
-        ax2 = axes[1]
-        ax2.set_title('Docking Error per Trial')
+        # ── subplot 2: GT x/y 오차 막대 그래프 (우측 상단) ──────
+        ax2 = fig.add_subplot(gs[0, 1])
+        ax2.set_title('GT Position Error per Trial')
 
         trial_nums = [r['trial'] for r in self._results]
-        gt_x_cm  = [r['gt_x_error_m']  * 100 for r in self._results]
-        gt_y_cm  = [r['gt_y_error_m']  * 100 for r in self._results]
-        mcl_x_cm = [r['mcl_x_error_m'] * 100 for r in self._results]
-        mcl_y_cm = [r['mcl_y_error_m'] * 100 for r in self._results]
-        gt_yaw_deg  = [r['gt_yaw_error_rad']  * 180 / math.pi for r in self._results]
-        mcl_yaw_deg = [r['mcl_yaw_error_rad'] * 180 / math.pi for r in self._results]
+        gt_x_cm = [r['gt_x_error_m'] * 100 for r in self._results]
+        gt_y_cm = [r['gt_y_error_m'] * 100 for r in self._results]
 
         x = np.arange(len(trial_nums))
-        w = 0.13  # 6개 bar
+        w = 0.3  # 2개 bar
 
-        ax2.bar(x - 2.5*w, gt_x_cm,  w, label='GT x [cm]',    color='#e74c3c', alpha=0.85)
-        ax2.bar(x - 1.5*w, gt_y_cm,  w, label='GT y [cm]',    color='#c0392b', alpha=0.85)
-        ax2.bar(x - 0.5*w, mcl_x_cm, w, label='MCL x [cm]',   color='#3498db', alpha=0.85)
-        ax2.bar(x + 0.5*w, mcl_y_cm, w, label='MCL y [cm]',   color='#1a6fa8', alpha=0.85)
-        ax2.bar(x + 1.5*w, gt_yaw_deg,  w, label='GT yaw [deg]',  color='#e67e22', alpha=0.85)
-        ax2.bar(x + 2.5*w, mcl_yaw_deg, w, label='MCL yaw [deg]', color='#9b59b6', alpha=0.85)
+        ax2.bar(x - 0.5*w, gt_x_cm, w, label='GT x [cm]', color='#e74c3c', alpha=0.85)
+        ax2.bar(x + 0.5*w, gt_y_cm, w, label='GT y [cm]', color='#c0392b', alpha=0.85)
 
-        # GT x/y 평균선
         def valid_mean(vals):
             v = [val for val in vals if not math.isnan(val)]
             return sum(v) / len(v) if v else None
 
         for vals, color, lbl in [
-            (gt_x_cm,  '#e74c3c', 'GT x mean'),
-            (gt_y_cm,  '#c0392b', 'GT y mean'),
+            (gt_x_cm, '#e74c3c', 'GT x mean'),
+            (gt_y_cm, '#c0392b', 'GT y mean'),
         ]:
             m = valid_mean(vals)
             if m is not None:
@@ -1005,11 +997,32 @@ class DockingAccuracyTestNode(Node):
 
         ax2.axhline(0, color='black', linewidth=0.8, alpha=0.4)
         ax2.set_xlabel('Trial')
-        ax2.set_ylabel('Error (signed)')
+        ax2.set_ylabel('Error [cm] (signed)')
         ax2.set_xticks(x)
         ax2.set_xticklabels([f'T{n}' for n in trial_nums])
         ax2.legend(fontsize=7)
         ax2.grid(True, axis='y', alpha=0.3)
+
+        # ── subplot 3: GT yaw 오차 막대 그래프 (우측 하단) ───────
+        ax3 = fig.add_subplot(gs[1, 1])
+        ax3.set_title('GT Yaw Error per Trial')
+
+        gt_yaw_deg = [r['gt_yaw_error_rad'] * 180 / math.pi for r in self._results]
+
+        ax3.bar(x, gt_yaw_deg, 0.5, label='GT yaw [deg]', color='#e67e22', alpha=0.85)
+
+        m_yaw = valid_mean(gt_yaw_deg)
+        if m_yaw is not None:
+            ax3.axhline(m_yaw, color='#e67e22', linestyle='--', linewidth=1.2,
+                        alpha=0.7, label=f'GT yaw mean ({m_yaw:.2f} deg)')
+
+        ax3.axhline(0, color='black', linewidth=0.8, alpha=0.4)
+        ax3.set_xlabel('Trial')
+        ax3.set_ylabel('Error [deg] (signed)')
+        ax3.set_xticks(x)
+        ax3.set_xticklabels([f'T{n}' for n in trial_nums])
+        ax3.legend(fontsize=7)
+        ax3.grid(True, axis='y', alpha=0.3)
 
         plt.tight_layout()
         plt.savefig(self._png_path, dpi=150, bbox_inches='tight')
