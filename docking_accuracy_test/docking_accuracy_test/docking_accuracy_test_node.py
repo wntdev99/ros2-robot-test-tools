@@ -925,6 +925,13 @@ class DockingAccuracyTestNode(Node):
     def _save_png(self):
         """matplotlib으로 결과 PNG 저장."""
         try:
+            self._save_png_impl()
+        except Exception as e:
+            import traceback
+            self.get_logger().error(f'PNG 저장 실패: {e}\n{traceback.format_exc()}')
+
+    def _save_png_impl(self):
+        try:
             import matplotlib
             matplotlib.use('Agg')
             import matplotlib.pyplot as plt
@@ -1121,7 +1128,7 @@ class DockingAccuracyTestNode(Node):
         ax3.legend(fontsize=7)
         ax3.grid(True, axis='y', alpha=0.3)
 
-        plt.savefig(self._png_path, dpi=150, bbox_inches='tight')
+        fig.savefig(self._png_path, dpi=150)
         plt.close(fig)
         self.get_logger().info(f'PNG 저장 완료: {self._png_path}')
 
