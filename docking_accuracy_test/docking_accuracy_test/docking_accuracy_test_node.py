@@ -913,6 +913,7 @@ class DockingAccuracyTestNode(Node):
 
         # matplotlib PNG 저장
         self._save_png()
+        self._save_best_worst_pngs()
 
         rclpy.shutdown()
 
@@ -1147,10 +1148,54 @@ class DockingAccuracyTestNode(Node):
         plt.close(fig)
         self.get_logger().info(f'PNG 저장 완료: {self._png_path}')
 
-    def _save_trial_png(self, trial_idx: int):
+    def _save_best_worst_pngs(self):
+        """x·y·yaw 각 축의 best(오차 최소) / worst(오차 최대) trial PNG 6개 저장."""
+        valid = [
+            (i, r) for i, r in enumerate(self._results)
+            if not (math.isnan(r['gt_x_error_m'])
+                    or math.isnan(r['gt_y_error_m'])
+                    or math.isnan(r['gt_yaw_error_rad']))
+        ]
+        if not valid:
+            self.get_logger().warn('Best/Worst PNG: 유효한 결과 없음.')
+            return
+
+        specs = [
+            ('x',   'gt_x_error_m',     'Best X Error',   'Worst X Error'),
+            ('y',   'gt_y_error_m',     'Best Y Error',   'Worst Y Error'),
+            ('yaw', 'gt_yaw_error_rad', 'Best Yaw Error', 'Worst Yaw Error'),
+        ]
+
+        for axis, field, best_label, worst_label in specs:
+            sorted_asc = sorted(valid, key=lambda t: abs(t[1][field]))
+            best_idx,  best_row  = sorted_asc[0]
+            worst_idx, worst_row = sorted_asc[-1]
+
+            best_path = os.path.join(
+                self._result_dir,
+                f'best_{axis}_T{best_row["trial"]:03d}.png'
+            )
+            worst_path = os.path.join(
+                self._result_dir,
+                f'worst_{axis}_T{worst_row["trial"]:03d}.png'
+            )
+
+            self._save_trial_png(
+                best_idx,
+                out_path=best_path,
+                title=f'Docking Accuracy \u2014 {best_label} (Trial {best_row["trial"]})',
+            )
+            self._save_trial_png(
+                worst_idx,
+                out_path=worst_path,
+                title=f'Docking Accuracy \u2014 {worst_label} (Trial {worst_row["trial"]})',
+            )
+
+    def _save_trial_png(self, trial_idx: int,
+                        out_path: str = None, title: str = None):
         """단일 trial PNG 저장 (예외 처리 래퍼)."""
         try:
-            self._save_trial_png_impl(trial_idx)
+            self._save_trial_png_impl(trial_idx, out_path=out_path, title=title)
         except Exception as e:
             import traceback
             self.get_logger().error(
@@ -1158,7 +1203,8 @@ class DockingAccuracyTestNode(Node):
                 f'{traceback.format_exc()}'
             )
 
-    def _save_trial_png_impl(self, trial_idx: int):
+    def _save_trial_png_impl(self, trial_idx: int,
+                             out_path: str = None, title: str = None):
         """해당 trial의 데이터만으로 독립 PNG 저장."""
         try:
             import matplotlib
@@ -1175,10 +1221,13 @@ class DockingAccuracyTestNode(Node):
 
         row = self._results[trial_idx]
         trial_num = row['trial']
-        out_path = os.path.join(
-            self._result_dir,
-            f'docking_accuracy_{self._timestamp}_T{trial_num:03d}.png'
-        )
+        if out_path is None:
+            out_path = os.path.join(
+                self._result_dir,
+                f'docking_accuracy_{self._timestamp}_T{trial_num:03d}.png'
+            )
+        if title is None:
+            title = f'Docking Accuracy Test \u2014 Trial {trial_num}'
 
         with self._data_lock:
             footprint_shape = self._footprint_shape
@@ -1187,8 +1236,7 @@ class DockingAccuracyTestNode(Node):
 
         fig = plt.figure(figsize=(20, 10), constrained_layout=True)
         gs = fig.add_gridspec(2, 2, width_ratios=[1.3, 0.7], hspace=0.45, wspace=0.3)
-        fig.suptitle(f'Docking Accuracy Test \u2014 Trial {trial_num}',
-                     fontsize=15, fontweight='bold')
+        fig.suptitle(title, fontsize=15, fontweight='bold')
 
         ax1 = fig.add_subplot(gs[:, 0])
         ax1.set_title('Top-down View (map frame)')
