@@ -223,9 +223,8 @@ class DockingAccuracyTestNode(Node):
         os.makedirs(self._result_dir, exist_ok=True)
 
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        self._csv_path = os.path.join(
-            self._result_dir, f'docking_accuracy_{timestamp}.csv'
-        )
+        # CSV: 세션 누적 파일 (append), PNG: 세션별 파일 (타임스탬프)
+        self._csv_path = os.path.join(self._result_dir, 'docking_accuracy_results.csv')
         self._png_path = os.path.join(
             self._result_dir, f'docking_accuracy_{timestamp}.png'
         )
@@ -283,8 +282,8 @@ class DockingAccuracyTestNode(Node):
         self._input_event = threading.Event()
         self._input_quit = False
 
-        # CSV 초기화
-        self._init_csv()
+        # CSV 헤더 (파일 없을 때만 작성)
+        self._ensure_csv_header()
 
         self.get_logger().info(
             f'DockingAccuracyTestNode 초기화 완료. n_trials={self._n_trials}'
@@ -353,30 +352,27 @@ class DockingAccuracyTestNode(Node):
 
     # ─── CSV ─────────────────────────────────────────────────────
 
-    def _init_csv(self):
-        """CSV 파일 헤더 작성."""
-        with open(self._csv_path, 'w', newline='') as f:
-            writer = csv.writer(f)
-            writer.writerow([
-                'trial', 'dock_success',
-                'target_x', 'target_y', 'target_yaw',
-                'gt_x', 'gt_y', 'gt_yaw',
-                'mcl_x', 'mcl_y', 'mcl_yaw',
-                'gt_xy_error_m', 'gt_yaw_error_rad',
-                'mcl_xy_error_m', 'mcl_yaw_error_rad',
-            ])
+    _CSV_FIELDS = [
+        'trial', 'dock_success',
+        'target_x', 'target_y', 'target_yaw',
+        'gt_x', 'gt_y', 'gt_yaw',
+        'mcl_x', 'mcl_y', 'mcl_yaw',
+        'gt_x_error_m', 'gt_y_error_m', 'gt_yaw_error_rad',
+        'mcl_x_error_m', 'mcl_y_error_m', 'mcl_yaw_error_rad',
+        'entrance_angle_deg',
+        'png_path',
+    ]
+
+    def _ensure_csv_header(self):
+        """파일이 없을 때만 헤더를 작성 (세션 간 누적 append 방식)."""
+        if not os.path.exists(self._csv_path):
+            with open(self._csv_path, 'w', newline='') as f:
+                csv.writer(f).writerow(self._CSV_FIELDS)
 
     def _append_csv(self, row: dict):
-        """CSV에 한 행 추가."""
+        """CSV에 한 행 추가 (append)."""
         with open(self._csv_path, 'a', newline='') as f:
-            writer = csv.DictWriter(f, fieldnames=[
-                'trial', 'dock_success',
-                'target_x', 'target_y', 'target_yaw',
-                'gt_x', 'gt_y', 'gt_yaw',
-                'mcl_x', 'mcl_y', 'mcl_yaw',
-                'gt_xy_error_m', 'gt_yaw_error_rad',
-                'mcl_xy_error_m', 'mcl_yaw_error_rad',
-            ])
+            writer = csv.DictWriter(f, fieldnames=self._CSV_FIELDS)
             writer.writerow(row)
 
     # ─── 테스트 루프 ─────────────────────────────────────────────
@@ -448,21 +444,35 @@ class DockingAccuracyTestNode(Node):
                 mcl_snap = self._latest_mcl
                 dock_pose_snap = self._latest_dock_pose
 
-            # 8. 오차 계산 및 CSV 기록
+            # 8. 입구 각도 계산
+            with self._data_lock:
+                fp_shape_snap = self._footprint_shape
+            entrance_angle_deg = float('nan')
+            if fp_shape_snap is not None and gt_snap is not None:
+                entrance_angle_deg = compute_entrance_angle_deg(
+                    fp_shape_snap,
+                    gt_snap.pose.pose.position.x,
+                    gt_snap.pose.pose.position.y,
+                    quaternion_to_yaw(gt_snap.pose.pose.orientation),
+                )
+
+            # 9. 오차 계산 및 CSV 기록
             row = self._compute_and_record(
-                trial_idx + 1, dock_success, gt_snap, mcl_snap, dock_pose_snap
+                trial_idx + 1, dock_success, gt_snap, mcl_snap,
+                dock_pose_snap, entrance_angle_deg,
             )
             self._results.append(row)
 
-            # 9. RViz2 MarkerArray 발행
+            # 10. RViz2 MarkerArray 발행
             self._publish_markers()
 
             # 결과 출력
             self.get_logger().info(
                 f'[Trial {trial_idx + 1}] 결과: success={dock_success}, '
-                f'GT_xy={row["gt_xy_error_m"]:.4f}m, '
-                f'GT_yaw={row["gt_yaw_error_rad"]:.4f}rad, '
-                f'MCL_xy={row["mcl_xy_error_m"]:.4f}m'
+                f'GT_x={row["gt_x_error_m"]*100:.2f}cm  '
+                f'GT_y={row["gt_y_error_m"]*100:.2f}cm  '
+                f'GT_yaw={math.degrees(row["gt_yaw_error_rad"]):.2f}deg  '
+                f'entrance={row["entrance_angle_deg"]:.2f}deg'
             )
 
             # 10. 사용자 입력 대기
@@ -582,6 +592,7 @@ class DockingAccuracyTestNode(Node):
         gt_snap: Odometry,
         mcl_snap: PoseWithCovarianceStamped,
         dock_pose_snap: PoseStamped,
+        entrance_angle_deg: float,
     ) -> dict:
         """오차 계산 후 CSV 기록 및 dict 반환."""
         nan = float('nan')
@@ -613,21 +624,12 @@ class DockingAccuracyTestNode(Node):
                 '/dock_pose 캡처 실패: target 포즈를 NaN으로 기록합니다.'
             )
 
-        # 오차 계산
-        def xy_error(tx, ty, rx, ry):
-            if any(math.isnan(v) for v in [tx, ty, rx, ry]):
-                return nan
-            return math.sqrt((tx - rx) ** 2 + (ty - ry) ** 2)
+        # x/y 오차 (부호 있음: target - actual)
+        def axis_err(t, r):
+            return nan if (math.isnan(t) or math.isnan(r)) else (t - r)
 
         def yaw_err(tyaw, ryaw):
-            if math.isnan(tyaw) or math.isnan(ryaw):
-                return nan
-            return wrap_to_pi(tyaw - ryaw)
-
-        gt_xy_error = xy_error(target_x, target_y, gt_x, gt_y)
-        gt_yaw_error = yaw_err(target_yaw, gt_yaw)
-        mcl_xy_error = xy_error(target_x, target_y, mcl_x, mcl_y)
-        mcl_yaw_error = yaw_err(target_yaw, mcl_yaw)
+            return nan if (math.isnan(tyaw) or math.isnan(ryaw)) else wrap_to_pi(tyaw - ryaw)
 
         row = {
             'trial': trial,
@@ -641,10 +643,14 @@ class DockingAccuracyTestNode(Node):
             'mcl_x': mcl_x,
             'mcl_y': mcl_y,
             'mcl_yaw': mcl_yaw,
-            'gt_xy_error_m': gt_xy_error,
-            'gt_yaw_error_rad': gt_yaw_error,
-            'mcl_xy_error_m': mcl_xy_error,
-            'mcl_yaw_error_rad': mcl_yaw_error,
+            'gt_x_error_m':    axis_err(target_x, gt_x),
+            'gt_y_error_m':    axis_err(target_y, gt_y),
+            'gt_yaw_error_rad': yaw_err(target_yaw, gt_yaw),
+            'mcl_x_error_m':   axis_err(target_x, mcl_x),
+            'mcl_y_error_m':   axis_err(target_y, mcl_y),
+            'mcl_yaw_error_rad': yaw_err(target_yaw, mcl_yaw),
+            'entrance_angle_deg': entrance_angle_deg,
+            'png_path': self._png_path,
         }
         self._append_csv(row)
         return row
@@ -737,8 +743,10 @@ class DockingAccuracyTestNode(Node):
             if math.isnan(row['gt_x']):
                 continue
 
-            # 오차에 따른 색상
-            xy_err = row['gt_xy_error_m']
+            # 오차에 따른 색상 (xy 유클리드 거리로 계산)
+            gx_e = row['gt_x_error_m']
+            gy_e = row['gt_y_error_m']
+            xy_err = math.sqrt(gx_e**2 + gy_e**2) if not (math.isnan(gx_e) or math.isnan(gy_e)) else float('nan')
             if math.isnan(xy_err):
                 r, g, b = 0.5, 0.5, 0.5
             elif xy_err < ERROR_GREEN_THRESHOLD:
@@ -821,22 +829,8 @@ class DockingAccuracyTestNode(Node):
             return
 
         # 통계 계산
-        gt_xy_errors = [
-            r['gt_xy_error_m'] for r in self._results
-            if not math.isnan(r['gt_xy_error_m'])
-        ]
-        gt_yaw_errors = [
-            abs(r['gt_yaw_error_rad']) for r in self._results
-            if not math.isnan(r['gt_yaw_error_rad'])
-        ]
-        mcl_xy_errors = [
-            r['mcl_xy_error_m'] for r in self._results
-            if not math.isnan(r['mcl_xy_error_m'])
-        ]
-        mcl_yaw_errors = [
-            abs(r['mcl_yaw_error_rad']) for r in self._results
-            if not math.isnan(r['mcl_yaw_error_rad'])
-        ]
+        def vld(key):
+            return [r[key] for r in self._results if not math.isnan(r[key])]
 
         def mean(lst):
             return sum(lst) / len(lst) if lst else float('nan')
@@ -844,10 +838,13 @@ class DockingAccuracyTestNode(Node):
         self.get_logger().info(
             f'\n{"="*50}\n'
             f'=== 테스트 완료: {len(self._results)}회 ===\n'
-            f'GT  평균 xy 오차:  {mean(gt_xy_errors)*100:.2f} cm\n'
-            f'GT  평균 yaw 오차: {math.degrees(mean(gt_yaw_errors)):.2f} deg\n'
-            f'MCL 평균 xy 오차:  {mean(mcl_xy_errors)*100:.2f} cm\n'
-            f'MCL 평균 yaw 오차: {math.degrees(mean(mcl_yaw_errors)):.2f} deg\n'
+            f'GT  평균 x 오차:   {mean(vld("gt_x_error_m"))*100:.2f} cm\n'
+            f'GT  평균 y 오차:   {mean(vld("gt_y_error_m"))*100:.2f} cm\n'
+            f'GT  평균 yaw 오차: {math.degrees(mean([abs(v) for v in vld("gt_yaw_error_rad")])):.2f} deg\n'
+            f'MCL 평균 x 오차:   {mean(vld("mcl_x_error_m"))*100:.2f} cm\n'
+            f'MCL 평균 y 오차:   {mean(vld("mcl_y_error_m"))*100:.2f} cm\n'
+            f'MCL 평균 yaw 오차: {math.degrees(mean([abs(v) for v in vld("mcl_yaw_error_rad")])):.2f} deg\n'
+            f'평균 입구 각도:    {mean(vld("entrance_angle_deg")):.2f} deg\n'
             f'CSV: {self._csv_path}\n'
             f'PNG: {self._png_path}\n'
             f'{"="*50}'
