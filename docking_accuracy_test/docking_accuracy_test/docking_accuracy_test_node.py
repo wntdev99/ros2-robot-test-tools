@@ -200,7 +200,7 @@ def _compute_dock_alignment(tf_abs, tf_target):
 
 
 
-def _draw_dock_alignment(ax, tf_abs, tf_target, color, y_offset=0.0):
+def _draw_dock_alignment(ax, tf_abs, tf_target, color, y_offset=0.0, show_text=True):
     """dock line(cyan), front_face 중심 마커, 정렬 오차 텍스트를 ax에 그린다."""
     aln = _compute_dock_alignment(tf_abs, tf_target)
     if aln is None:
@@ -220,17 +220,18 @@ def _draw_dock_alignment(ax, tf_abs, tf_target, color, y_offset=0.0):
             'x', color=color, markersize=8, markeredgewidth=2.0, zorder=10)
 
     # 오차 텍스트 — V-shape 위쪽(y > V_SHAPE_LEFT[1])에 배치하여 footprint와 겹침 방지
-    label = (
-        f'Δx={aln["dx_cm"]:+.1f}cm\n'
-        f'Δy={aln["dy_cm"]:+.1f}cm\n'
-        f'Δyaw={aln["yaw_deg_signed"]:+.1f}°'
-    )
-    text_x = dl_x - 0.05
-    text_y = max(V_SHAPE_LEFT[1], V_SHAPE_RIGHT[1]) + 0.14 + y_offset
-    ax.text(text_x, text_y, label,
-            fontsize=7.5, color='cyan', ha='center', va='bottom', zorder=11,
-            bbox=dict(facecolor='#111111', alpha=0.75, edgecolor='cyan',
-                      linewidth=0.8, pad=3))
+    if show_text:
+        label = (
+            f'Δx={aln["dx_cm"]:+.1f}cm\n'
+            f'Δy={aln["dy_cm"]:+.1f}cm\n'
+            f'Δyaw={aln["yaw_deg_signed"]:+.1f}°'
+        )
+        text_x = dl_x - 0.05
+        text_y = max(V_SHAPE_LEFT[1], V_SHAPE_RIGHT[1]) + 0.14 + y_offset
+        ax.text(text_x, text_y, label,
+                fontsize=7.5, color='cyan', ha='center', va='bottom', zorder=11,
+                bbox=dict(facecolor='#111111', alpha=0.75, edgecolor='cyan',
+                          linewidth=0.8, pad=3))
 
 
 class DockingAccuracyTestNode(Node):
@@ -1045,7 +1046,27 @@ class DockingAccuracyTestNode(Node):
                     ax1.plot([], [], color='cyan', linewidth=2.5,
                              label='Dock line + alignment error')
                     entrance_ref_labeled = True
-                _draw_dock_alignment(ax1, tf, tf_target, color, y_offset=i * 0.14)
+                aln = _compute_dock_alignment(tf, tf_target)
+                if aln is not None:
+                    aln_list.append(aln)
+                _draw_dock_alignment(ax1, tf, tf_target, color,
+                                     y_offset=i * 0.14, show_text=False)
+
+        # 누적 min/max 요약 박스 (개별 박스 대신)
+        if aln_list:
+            dx_vals  = [a['dx_cm']          for a in aln_list]
+            dy_vals  = [a['dy_cm']          for a in aln_list]
+            yaw_vals = [a['yaw_deg_signed'] for a in aln_list]
+            summary = (
+                f'{min(dx_vals):+.1f} cm \u2264 \u0394x \u2264 {max(dx_vals):+.1f} cm\n'
+                f'{min(dy_vals):+.1f} cm \u2264 \u0394y \u2264 {max(dy_vals):+.1f} cm\n'
+                f'{min(yaw_vals):+.1f}\u00b0 \u2264 \u0394yaw \u2264 {max(yaw_vals):+.1f}\u00b0'
+            )
+            ax1.text(0.98, 0.98, summary,
+                     transform=ax1.transAxes,
+                     fontsize=8, color='cyan', ha='right', va='top', zorder=11,
+                     bbox=dict(facecolor='#111111', alpha=0.80,
+                               edgecolor='cyan', linewidth=1.0, pad=4))
 
         # top-down view: 데이터 범위에 맞게 자동 줌
         _bx = [V_SHAPE_TIP[0], V_SHAPE_LEFT[0], V_SHAPE_RIGHT[0]]
