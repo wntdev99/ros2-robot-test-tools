@@ -967,54 +967,48 @@ class DockingAccuracyTestNode(Node):
 
         ax1.legend(loc='upper left', fontsize=7)
 
-        # ── subplot 2: 오차 막대 그래프 ─────────────────────────
+        # ── subplot 2: 오차 막대 그래프 (x/y/yaw 분리) ──────────
         ax2 = axes[1]
         ax2.set_title('Docking Error per Trial')
 
         trial_nums = [r['trial'] for r in self._results]
-        gt_xy = [r['gt_xy_error_m'] * 100 for r in self._results]    # cm
-        mcl_xy = [r['mcl_xy_error_m'] * 100 for r in self._results]  # cm
-        gt_yaw = [
-            abs(r['gt_yaw_error_rad']) * 180 / math.pi
-            for r in self._results
-        ]
-        mcl_yaw = [
-            abs(r['mcl_yaw_error_rad']) * 180 / math.pi
-            for r in self._results
-        ]
+        gt_x_cm  = [r['gt_x_error_m']  * 100 for r in self._results]
+        gt_y_cm  = [r['gt_y_error_m']  * 100 for r in self._results]
+        mcl_x_cm = [r['mcl_x_error_m'] * 100 for r in self._results]
+        mcl_y_cm = [r['mcl_y_error_m'] * 100 for r in self._results]
+        gt_yaw_deg  = [r['gt_yaw_error_rad']  * 180 / math.pi for r in self._results]
+        mcl_yaw_deg = [r['mcl_yaw_error_rad'] * 180 / math.pi for r in self._results]
 
         x = np.arange(len(trial_nums))
-        width = 0.2
+        w = 0.13  # 6개 bar
 
-        ax2.bar(x - 1.5*width, gt_xy,  width, label='GT xy [cm]',   color='#e74c3c', alpha=0.8)
-        ax2.bar(x - 0.5*width, mcl_xy, width, label='MCL xy [cm]',  color='#3498db', alpha=0.8)
-        ax2.bar(x + 0.5*width, gt_yaw, width, label='GT yaw [deg]', color='#e67e22', alpha=0.8)
-        ax2.bar(x + 1.5*width, mcl_yaw, width, label='MCL yaw [deg]', color='#9b59b6', alpha=0.8)
+        ax2.bar(x - 2.5*w, gt_x_cm,  w, label='GT x [cm]',    color='#e74c3c', alpha=0.85)
+        ax2.bar(x - 1.5*w, gt_y_cm,  w, label='GT y [cm]',    color='#c0392b', alpha=0.85)
+        ax2.bar(x - 0.5*w, mcl_x_cm, w, label='MCL x [cm]',   color='#3498db', alpha=0.85)
+        ax2.bar(x + 0.5*w, mcl_y_cm, w, label='MCL y [cm]',   color='#1a6fa8', alpha=0.85)
+        ax2.bar(x + 1.5*w, gt_yaw_deg,  w, label='GT yaw [deg]',  color='#e67e22', alpha=0.85)
+        ax2.bar(x + 2.5*w, mcl_yaw_deg, w, label='MCL yaw [deg]', color='#9b59b6', alpha=0.85)
 
-        # 평균선
-        valid_gt_xy = [v for v in gt_xy if not math.isnan(v)]
-        valid_mcl_xy = [v for v in mcl_xy if not math.isnan(v)]
-        valid_gt_yaw = [v for v in gt_yaw if not math.isnan(v)]
-        valid_mcl_yaw = [v for v in mcl_yaw if not math.isnan(v)]
+        # GT x/y 평균선
+        def valid_mean(vals):
+            v = [val for val in vals if not math.isnan(val)]
+            return sum(v) / len(v) if v else None
 
-        if valid_gt_xy:
-            ax2.axhline(
-                sum(valid_gt_xy) / len(valid_gt_xy),
-                color='#e74c3c', linestyle='--', linewidth=1.5,
-                alpha=0.6, label=f'GT xy mean ({sum(valid_gt_xy)/len(valid_gt_xy):.1f} cm)',
-            )
-        if valid_mcl_xy:
-            ax2.axhline(
-                sum(valid_mcl_xy) / len(valid_mcl_xy),
-                color='#3498db', linestyle='--', linewidth=1.5,
-                alpha=0.6, label=f'MCL xy mean ({sum(valid_mcl_xy)/len(valid_mcl_xy):.1f} cm)',
-            )
+        for vals, color, lbl in [
+            (gt_x_cm,  '#e74c3c', 'GT x mean'),
+            (gt_y_cm,  '#c0392b', 'GT y mean'),
+        ]:
+            m = valid_mean(vals)
+            if m is not None:
+                ax2.axhline(m, color=color, linestyle='--', linewidth=1.2,
+                            alpha=0.7, label=f'{lbl} ({m:.1f} cm)')
 
+        ax2.axhline(0, color='black', linewidth=0.8, alpha=0.4)
         ax2.set_xlabel('Trial')
-        ax2.set_ylabel('Error')
+        ax2.set_ylabel('Error (signed)')
         ax2.set_xticks(x)
         ax2.set_xticklabels([f'T{n}' for n in trial_nums])
-        ax2.legend(fontsize=8)
+        ax2.legend(fontsize=7)
         ax2.grid(True, axis='y', alpha=0.3)
 
         plt.tight_layout()
