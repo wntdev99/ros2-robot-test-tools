@@ -81,16 +81,15 @@ def rotate_point(x: float, y: float, yaw: float):
     return (cos_y * x - sin_y * y, sin_y * x + cos_y * y)
 
 
-def _draw_entrance_angle(ax, tf_abs):
-    """V자 입구 선을 footprint 최근접 꼭지점에 평행이동 후 앞부분 라인과의 각도 시각화.
+def _entrance_angle_data(tf_abs):
+    """V자 입구 선-footprint 앞부분 각도 계산에 필요한 모든 데이터를 반환.
 
-    Args:
-        ax: matplotlib Axes
-        tf_abs: map frame 절대 좌표로 변환된 footprint 꼭지점 [(x, y), ...]
+    Returns:
+        dict(cx, cy, sp1, sp2, angle_deg, theta_start, diff) 또는 None
     """
     n = len(tf_abs)
     if n < 3:
-        return
+        return None
 
     lx, ly = V_SHAPE_LEFT
     rx_, ry_ = V_SHAPE_RIGHT
@@ -104,17 +103,14 @@ def _draw_entrance_angle(ax, tf_abs):
         t = max(0.0, min(1.0, (apx * abx + apy * aby) / denom))
         return math.sqrt((px - ax_ - t * abx) ** 2 + (py - ay_ - t * aby) ** 2)
 
-    # V자 입구 선분에 가장 가까운 꼭지점 인덱스
     dists = [dist_pt_seg(p[0], p[1], lx, ly, rx_, ry_) for p in tf_abs]
     ci = dists.index(min(dists))
     cx, cy = tf_abs[ci]
 
-    # 입구 선 방향 단위벡터 ((lx,ly) → (rx_,ry_) 방향)
     ev_x, ev_y = lx - rx_, ly - ry_
     ev_len = math.sqrt(ev_x ** 2 + ev_y ** 2)
     ev_ux, ev_uy = ev_x / ev_len, ev_y / ev_len
 
-    # 인접 두 엣지 중 입구 선에 가장 평행한 것 → "앞부분 라인"
     edges = [
         (tf_abs[(ci - 1) % n], tf_abs[ci]),
         (tf_abs[ci], tf_abs[(ci + 1) % n]),
@@ -133,26 +129,48 @@ def _draw_entrance_angle(ax, tf_abs):
     fv_len = math.sqrt(fv_x ** 2 + fv_y ** 2 + 1e-12)
     fv_ux, fv_uy = fv_x / fv_len, fv_y / fv_len
 
-    # 입구 선을 closest_corner 기준으로 평행이동 (꼭지점이 중심, 앞면 엣지 길이)
     half = fv_len / 2
     sp1 = (cx - ev_ux * half, cy - ev_uy * half)
     sp2 = (cx + ev_ux * half, cy + ev_uy * half)
-    ax.plot([sp1[0], sp2[0]], [sp1[1], sp2[1]],
-            color='magenta', linewidth=2.0, zorder=9)
 
-    # 각도 계산 (0~90°, 두 선분 방향 무관)
     dot = max(-1.0, min(1.0, ev_ux * fv_ux + ev_uy * fv_uy))
     angle_deg = math.degrees(math.acos(abs(dot)))
 
-    # 내적이 음수이면 방향 반전하여 예각 쪽으로 정렬
     if dot < 0:
         fv_ux, fv_uy = -fv_ux, -fv_uy
 
-    # 호(arc) 그리기
-    arc_r = 0.08
     theta_start = math.atan2(ev_uy, ev_ux)
     theta_end = math.atan2(fv_uy, fv_ux)
     diff = wrap_to_pi(theta_end - theta_start)
+
+    return dict(cx=cx, cy=cy, sp1=sp1, sp2=sp2,
+                angle_deg=angle_deg, theta_start=theta_start, diff=diff)
+
+
+def compute_entrance_angle_deg(footprint_shape, gt_x, gt_y, gt_yaw) -> float:
+    """footprint body frame 좌표와 GT 포즈로 입구 각도(도)를 반환. CSV 기록용."""
+    tf = []
+    for fx, fy in footprint_shape:
+        rx, ry = rotate_point(fx, fy, gt_yaw)
+        tf.append((gt_x + rx, gt_y + ry))
+    data = _entrance_angle_data(tf)
+    return data['angle_deg'] if data is not None else float('nan')
+
+
+def _draw_entrance_angle(ax, tf_abs):
+    """_entrance_angle_data 결과를 matplotlib Axes에 시각화."""
+    data = _entrance_angle_data(tf_abs)
+    if data is None:
+        return
+    cx, cy = data['cx'], data['cy']
+    sp1, sp2 = data['sp1'], data['sp2']
+    angle_deg = data['angle_deg']
+    theta_start, diff = data['theta_start'], data['diff']
+
+    ax.plot([sp1[0], sp2[0]], [sp1[1], sp2[1]],
+            color='magenta', linewidth=2.0, zorder=9)
+
+    arc_r = 0.08
     steps = 30
     thetas = [theta_start + diff * k / steps for k in range(steps + 1)]
     ax.plot(
@@ -161,7 +179,6 @@ def _draw_entrance_angle(ax, tf_abs):
         color='magenta', linewidth=1.5, zorder=10,
     )
 
-    # 각도 텍스트
     mid_theta = theta_start + diff / 2
     tx = cx + arc_r * 2.4 * math.cos(mid_theta)
     ty = cy + arc_r * 2.4 * math.sin(mid_theta)
