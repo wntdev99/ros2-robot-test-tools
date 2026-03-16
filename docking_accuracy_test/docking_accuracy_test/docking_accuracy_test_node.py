@@ -514,6 +514,9 @@ class DockingAccuracyTestNode(Node):
             # 10. RViz2 MarkerArray 발행
             self._publish_markers()
 
+            # 매 trial마다 PNG 갱신 저장 (중간 중단 시에도 결과 보존)
+            self._save_png()
+
             # 결과 출력
             self.get_logger().info(
                 f'[Trial {trial_idx + 1}] 결과: success={dock_success}, '
