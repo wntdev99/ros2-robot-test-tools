@@ -40,6 +40,7 @@ RETRY = 5
 # V자 구조물 좌표 (시각화용)
 V_SHAPE_LEFT = (3.25, 0.428)
 V_SHAPE_RIGHT = (3.25, -0.427)
+V_SHAPE_TIP = (3.006, 0.008)   # V자 안쪽 꼭지점
 
 # 오차 임계값 (색상 분류)
 ERROR_GREEN_THRESHOLD = 0.05   # m
@@ -78,6 +79,95 @@ def rotate_point(x: float, y: float, yaw: float):
     cos_y = math.cos(yaw)
     sin_y = math.sin(yaw)
     return (cos_y * x - sin_y * y, sin_y * x + cos_y * y)
+
+
+def _draw_entrance_angle(ax, tf_abs):
+    """V자 입구 선을 footprint 최근접 꼭지점에 평행이동 후 앞부분 라인과의 각도 시각화.
+
+    Args:
+        ax: matplotlib Axes
+        tf_abs: map frame 절대 좌표로 변환된 footprint 꼭지점 [(x, y), ...]
+    """
+    n = len(tf_abs)
+    if n < 3:
+        return
+
+    lx, ly = V_SHAPE_LEFT
+    rx_, ry_ = V_SHAPE_RIGHT
+
+    def dist_pt_seg(px, py, ax_, ay_, bx, by):
+        abx, aby = bx - ax_, by - ay_
+        apx, apy = px - ax_, py - ay_
+        denom = abx ** 2 + aby ** 2
+        if denom < 1e-12:
+            return math.sqrt(apx ** 2 + apy ** 2)
+        t = max(0.0, min(1.0, (apx * abx + apy * aby) / denom))
+        return math.sqrt((px - ax_ - t * abx) ** 2 + (py - ay_ - t * aby) ** 2)
+
+    # V자 입구 선분에 가장 가까운 꼭지점 인덱스
+    dists = [dist_pt_seg(p[0], p[1], lx, ly, rx_, ry_) for p in tf_abs]
+    ci = dists.index(min(dists))
+    cx, cy = tf_abs[ci]
+
+    # 입구 선 방향 단위벡터 ((lx,ly) → (rx_,ry_) 방향)
+    ev_x, ev_y = lx - rx_, ly - ry_
+    ev_len = math.sqrt(ev_x ** 2 + ev_y ** 2)
+    ev_ux, ev_uy = ev_x / ev_len, ev_y / ev_len
+
+    # 인접 두 엣지 중 입구 선에 가장 평행한 것 → "앞부분 라인"
+    edges = [
+        (tf_abs[(ci - 1) % n], tf_abs[ci]),
+        (tf_abs[ci], tf_abs[(ci + 1) % n]),
+    ]
+
+    def parallel_cos(e):
+        dx = e[1][0] - e[0][0]
+        dy = e[1][1] - e[0][1]
+        elen = math.sqrt(dx ** 2 + dy ** 2 + 1e-12)
+        return abs(ev_ux * dx / elen + ev_uy * dy / elen)
+
+    front_edge = max(edges, key=parallel_cos)
+    fp1, fp2 = front_edge
+    fv_x = fp2[0] - fp1[0]
+    fv_y = fp2[1] - fp1[1]
+    fv_len = math.sqrt(fv_x ** 2 + fv_y ** 2 + 1e-12)
+    fv_ux, fv_uy = fv_x / fv_len, fv_y / fv_len
+
+    # 입구 선을 closest_corner 기준으로 평행이동 (꼭지점이 중심, 앞면 엣지 길이)
+    half = fv_len / 2
+    sp1 = (cx - ev_ux * half, cy - ev_uy * half)
+    sp2 = (cx + ev_ux * half, cy + ev_uy * half)
+    ax.plot([sp1[0], sp2[0]], [sp1[1], sp2[1]],
+            color='magenta', linewidth=2.0, zorder=9)
+
+    # 각도 계산 (0~90°, 두 선분 방향 무관)
+    dot = max(-1.0, min(1.0, ev_ux * fv_ux + ev_uy * fv_uy))
+    angle_deg = math.degrees(math.acos(abs(dot)))
+
+    # 내적이 음수이면 방향 반전하여 예각 쪽으로 정렬
+    if dot < 0:
+        fv_ux, fv_uy = -fv_ux, -fv_uy
+
+    # 호(arc) 그리기
+    arc_r = 0.08
+    theta_start = math.atan2(ev_uy, ev_ux)
+    theta_end = math.atan2(fv_uy, fv_ux)
+    diff = wrap_to_pi(theta_end - theta_start)
+    steps = 30
+    thetas = [theta_start + diff * k / steps for k in range(steps + 1)]
+    ax.plot(
+        [cx + arc_r * math.cos(t) for t in thetas],
+        [cy + arc_r * math.sin(t) for t in thetas],
+        color='magenta', linewidth=1.5, zorder=10,
+    )
+
+    # 각도 텍스트
+    mid_theta = theta_start + diff / 2
+    tx = cx + arc_r * 2.4 * math.cos(mid_theta)
+    ty = cy + arc_r * 2.4 * math.sin(mid_theta)
+    ax.text(tx, ty, f'{angle_deg:.1f}°', fontsize=9, color='magenta',
+            ha='center', va='center', zorder=11,
+            bbox=dict(facecolor='white', alpha=0.7, edgecolor='none', pad=1))
 
 
 class DockingAccuracyTestNode(Node):
@@ -776,11 +866,21 @@ class DockingAccuracyTestNode(Node):
         ax1.set_aspect('equal')
         ax1.grid(True, alpha=0.3)
 
-        # V자 입구 구조물 (일자 선)
+        # V자 전체 형상: 좌측 팔, 우측 팔, 입구 일자 구조물(점선)
+        ax1.plot(
+            [V_SHAPE_TIP[0], V_SHAPE_LEFT[0]],
+            [V_SHAPE_TIP[1], V_SHAPE_LEFT[1]],
+            color='gold', linewidth=3, solid_capstyle='round', label='V-shape', zorder=5,
+        )
+        ax1.plot(
+            [V_SHAPE_TIP[0], V_SHAPE_RIGHT[0]],
+            [V_SHAPE_TIP[1], V_SHAPE_RIGHT[1]],
+            color='gold', linewidth=3, solid_capstyle='round', zorder=5,
+        )
         ax1.plot(
             [V_SHAPE_LEFT[0], V_SHAPE_RIGHT[0]],
             [V_SHAPE_LEFT[1], V_SHAPE_RIGHT[1]],
-            'y-', linewidth=3, label='V-shape wall', zorder=5,
+            color='gold', linewidth=2, linestyle='--', zorder=5,
         )
 
         # 목표 도킹 포즈 ★
@@ -794,47 +894,62 @@ class DockingAccuracyTestNode(Node):
                     label='Target dock pose', zorder=10,
                 )
 
-        # 색상 팔레트 (trial별)
         colors = plt.cm.tab10.colors
 
         with self._data_lock:
             footprint_shape = self._footprint_shape
             gt_paths = [list(p) for p in self._gt_path_points]
 
+        entrance_ref_labeled = False
+
         for i, row in enumerate(self._results):
             color = colors[i % len(colors)]
 
-            # GT 경로 선
+            # GT 경로 (도킹 중 궤적, 점선)
             if i < len(gt_paths) and len(gt_paths[i]) >= 2:
                 xs = [p[0] for p in gt_paths[i]]
                 ys = [p[1] for p in gt_paths[i]]
-                ax1.plot(
-                    xs, ys,
-                    '-', color=color, linewidth=1.2, alpha=0.7,
-                    label=f'Trial {row["trial"]} path',
-                )
-                # 시작점 ○
-                ax1.plot(xs[0], ys[0], 'o', color=color, markersize=5, zorder=6)
+                ax1.plot(xs, ys, '--', color=color, linewidth=1.5, alpha=0.85,
+                         label=f'Trial {row["trial"]} path', zorder=6)
+                ax1.plot(xs[0], ys[0], 'o', color=color, markersize=5, zorder=7)
 
-            # GT 최종 footprint polygon (body frame 상대좌표 → gt_pose로 변환)
-            if not math.isnan(row['gt_x']) and footprint_shape is not None:
-                transformed = []
+            if math.isnan(row['gt_x']):
+                continue
+
+            # footprint polygon
+            tf = None
+            if footprint_shape is not None:
+                tf = []
                 for fx, fy in footprint_shape:
                     rx, ry = rotate_point(fx, fy, row['gt_yaw'])
-                    transformed.append((row['gt_x'] + rx, row['gt_y'] + ry))
-                poly = MplPolygon(
-                    transformed,
-                    closed=True,
-                    facecolor=color,
-                    edgecolor=color,
-                    alpha=0.5,
-                )
+                    tf.append((row['gt_x'] + rx, row['gt_y'] + ry))
+                poly = MplPolygon(tf, closed=True, facecolor=color,
+                                  edgecolor=color, alpha=0.4, zorder=7)
                 ax1.add_patch(poly)
-            elif not math.isnan(row['gt_x']):
-                ax1.plot(
-                    row['gt_x'], row['gt_y'],
-                    'o', color=color, markersize=8, alpha=0.8,
-                )
+            else:
+                ax1.plot(row['gt_x'], row['gt_y'], 'o', color=color,
+                         markersize=8, alpha=0.8, zorder=7)
+
+            # yaw 방향 벡터 (화살표)
+            arrow_len = 0.28
+            adx = arrow_len * math.cos(row['gt_yaw'])
+            ady = arrow_len * math.sin(row['gt_yaw'])
+            ax1.annotate(
+                '', xy=(row['gt_x'] + adx, row['gt_y'] + ady),
+                xytext=(row['gt_x'], row['gt_y']),
+                arrowprops=dict(arrowstyle='->', color=color,
+                                lw=2.0, mutation_scale=15),
+                zorder=12,
+            )
+
+            # V자 입구 선 → 최근접 꼭지점에 평행이동 + 앞부분 라인과 각도 표시
+            if tf is not None:
+                if not entrance_ref_labeled:
+                    # legend용 더미 선 (magenta)
+                    ax1.plot([], [], color='magenta', linewidth=2,
+                             label='Entrance ref + angle')
+                    entrance_ref_labeled = True
+                _draw_entrance_angle(ax1, tf)
 
         ax1.legend(loc='upper left', fontsize=7)
 
