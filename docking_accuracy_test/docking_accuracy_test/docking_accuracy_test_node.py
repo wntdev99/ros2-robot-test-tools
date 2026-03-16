@@ -273,11 +273,11 @@ class DockingAccuracyTestNode(Node):
         )
         os.makedirs(self._result_dir, exist_ok=True)
 
-        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        self._timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
         # CSV: 세션 누적 파일 (append), PNG: 세션별 파일 (타임스탬프)
         self._csv_path = os.path.join(self._result_dir, 'docking_accuracy_results.csv')
         self._png_path = os.path.join(
-            self._result_dir, f'docking_accuracy_{timestamp}.png'
+            self._result_dir, f'docking_accuracy_{self._timestamp}.png'
         )
 
         # QoS 설정
@@ -519,6 +519,7 @@ class DockingAccuracyTestNode(Node):
 
             # 매 trial마다 PNG 갱신 저장 (중간 중단 시에도 결과 보존)
             self._save_png()
+            self._save_trial_png(trial_idx)
 
             # 결과 출력
             self.get_logger().info(
@@ -989,6 +990,7 @@ class DockingAccuracyTestNode(Node):
             gt_paths = [list(p) for p in self._gt_path_points]
 
         entrance_ref_labeled = False
+        aln_list = []
 
         for i, row in enumerate(self._results):
             color = colors[i % len(colors)]
@@ -1150,6 +1152,167 @@ class DockingAccuracyTestNode(Node):
         fig.savefig(self._png_path, dpi=150)
         plt.close(fig)
         self.get_logger().info(f'PNG 저장 완료: {self._png_path}')
+
+    def _save_trial_png(self, trial_idx: int):
+        """단일 trial PNG 저장 (예외 처리 래퍼)."""
+        try:
+            self._save_trial_png_impl(trial_idx)
+        except Exception as e:
+            import traceback
+            self.get_logger().error(
+                f'Trial PNG 저장 실패 (trial={trial_idx+1}): {e}\n'
+                f'{traceback.format_exc()}'
+            )
+
+    def _save_trial_png_impl(self, trial_idx: int):
+        """해당 trial의 데이터만으로 독립 PNG 저장."""
+        try:
+            import matplotlib
+            matplotlib.use('Agg')
+            import matplotlib.pyplot as plt
+            from matplotlib.patches import Polygon as MplPolygon
+            import numpy as np
+        except ImportError as e:
+            self.get_logger().error(f'matplotlib import 실패: {e}')
+            return
+
+        if trial_idx >= len(self._results):
+            return
+
+        row = self._results[trial_idx]
+        trial_num = row['trial']
+        out_path = os.path.join(
+            self._result_dir,
+            f'docking_accuracy_{self._timestamp}_T{trial_num:03d}.png'
+        )
+
+        with self._data_lock:
+            footprint_shape = self._footprint_shape
+            gt_path = list(self._gt_path_points[trial_idx]) \
+                      if trial_idx < len(self._gt_path_points) else []
+
+        fig = plt.figure(figsize=(20, 10), constrained_layout=True)
+        gs = fig.add_gridspec(2, 2, width_ratios=[1.3, 0.7], hspace=0.45, wspace=0.3)
+        fig.suptitle(f'Docking Accuracy Test \u2014 Trial {trial_num}',
+                     fontsize=15, fontweight='bold')
+
+        ax1 = fig.add_subplot(gs[:, 0])
+        ax1.set_title('Top-down View (map frame)')
+        ax1.set_xlabel('X [m]')
+        ax1.set_ylabel('Y [m]')
+        ax1.set_aspect('equal')
+        ax1.grid(True, alpha=0.3)
+
+        # V자 형상
+        ax1.plot([V_SHAPE_TIP[0], V_SHAPE_LEFT[0]],
+                 [V_SHAPE_TIP[1], V_SHAPE_LEFT[1]],
+                 color='gold', linewidth=3, solid_capstyle='round',
+                 label='V-shape', zorder=5)
+        ax1.plot([V_SHAPE_TIP[0], V_SHAPE_RIGHT[0]],
+                 [V_SHAPE_TIP[1], V_SHAPE_RIGHT[1]],
+                 color='gold', linewidth=3, solid_capstyle='round', zorder=5)
+        ax1.plot([V_SHAPE_LEFT[0], V_SHAPE_RIGHT[0]],
+                 [V_SHAPE_LEFT[1], V_SHAPE_RIGHT[1]],
+                 color='gold', linewidth=2, linestyle='--', zorder=5)
+
+        # target 포즈 ★
+        if not math.isnan(row['target_x']):
+            ax1.plot(row['target_x'], row['target_y'],
+                     '*', color='white', markersize=15,
+                     markeredgecolor='black', markeredgewidth=0.5,
+                     label='Target dock pose', zorder=10)
+
+        color = plt.cm.tab10.colors[0]
+
+        # GT 경로
+        if len(gt_path) >= 2:
+            xs = [p[0] for p in gt_path]
+            ys = [p[1] for p in gt_path]
+            ax1.plot(xs, ys, '--', color=color, linewidth=1.5, alpha=0.85,
+                     label=f'Trial {trial_num} path', zorder=6)
+            ax1.plot(xs[0], ys[0], 'o', color=color, markersize=5, zorder=7)
+
+        # footprint + dock alignment (show_text=True)
+        tf = tf_target = None
+        if footprint_shape is not None and not math.isnan(row['gt_x']):
+            tf = []
+            for fx, fy in footprint_shape:
+                rx, ry = rotate_point(fx, fy, row['gt_yaw'])
+                tf.append((row['gt_x'] + rx, row['gt_y'] + ry))
+            poly = MplPolygon(tf, closed=True, facecolor=color,
+                              edgecolor=color, alpha=0.4, zorder=7)
+            ax1.add_patch(poly)
+
+            if not math.isnan(row['target_x']):
+                tf_target = []
+                for fx, fy in footprint_shape:
+                    rx, ry = rotate_point(fx, fy, row['target_yaw'])
+                    tf_target.append((row['target_x'] + rx, row['target_y'] + ry))
+
+        if not math.isnan(row['gt_x']):
+            arrow_len = 0.28
+            ax1.annotate('',
+                xy=(row['gt_x'] + arrow_len * math.cos(row['gt_yaw']),
+                    row['gt_y'] + arrow_len * math.sin(row['gt_yaw'])),
+                xytext=(row['gt_x'], row['gt_y']),
+                arrowprops=dict(arrowstyle='->', color=color, lw=2.0, mutation_scale=15),
+                zorder=12)
+
+        if tf is not None and tf_target is not None:
+            ax1.plot([], [], color='cyan', linewidth=2.5,
+                     label='Dock line + alignment error')
+            _draw_dock_alignment(ax1, tf, tf_target, color,
+                                 y_offset=0.0, show_text=True)
+
+        # auto-zoom
+        _bx = [V_SHAPE_TIP[0], V_SHAPE_LEFT[0], V_SHAPE_RIGHT[0]]
+        _by = [V_SHAPE_TIP[1], V_SHAPE_LEFT[1], V_SHAPE_RIGHT[1]]
+        _bx += [p[0] for p in gt_path]
+        _by += [p[1] for p in gt_path]
+        if not math.isnan(row['gt_x']):
+            _bx.append(row['gt_x'])
+            _by.append(row['gt_y'])
+        if _bx:
+            _yctr = (max(_by) + min(_by)) / 2.0
+            _yhalf = max((max(_by) - min(_by)) / 2.0 + 0.55, 0.75)
+            ax1.set_xlim(min(_bx) - 0.4, max(_bx) + 0.4)
+            ax1.set_ylim(_yctr - _yhalf, _yctr + _yhalf)
+
+        ax1.legend(loc='lower left', fontsize=7.5, framealpha=0.85, edgecolor='gray')
+
+        # bar charts (1개 trial)
+        x = np.arange(1)
+        w = 0.25
+        gt_x_cm = row['gt_x_error_m'] * 100
+        gt_y_cm = row['gt_y_error_m'] * 100
+        yaw_deg = row['gt_yaw_error_rad'] * 180 / math.pi
+
+        ax2 = fig.add_subplot(gs[0, 1])
+        ax2.set_title('GT Position Error')
+        ax2.bar(x - 0.5*w, [gt_x_cm], w, label='GT x [cm]', color='#e74c3c', alpha=0.85)
+        ax2.bar(x + 0.5*w, [gt_y_cm], w, label='GT y [cm]', color='#c0392b', alpha=0.85)
+        ax2.axhline(0, color='black', linewidth=0.8, alpha=0.4)
+        ax2.set_xticks(x)
+        ax2.set_xticklabels([f'T{trial_num}'])
+        ax2.margins(y=0.25)
+        ax2.legend(fontsize=7)
+        ax2.set_ylabel('Error [cm] (signed)')
+        ax2.grid(True, axis='y', alpha=0.3)
+
+        ax3 = fig.add_subplot(gs[1, 1])
+        ax3.set_title('GT Yaw Error')
+        ax3.bar(x, [yaw_deg], 0.4, label='GT yaw [deg]', color='#e67e22', alpha=0.85)
+        ax3.axhline(0, color='black', linewidth=0.8, alpha=0.4)
+        ax3.set_xticks(x)
+        ax3.set_xticklabels([f'T{trial_num}'])
+        ax3.margins(y=0.25)
+        ax3.legend(fontsize=7)
+        ax3.set_ylabel('Error [deg] (signed)')
+        ax3.grid(True, axis='y', alpha=0.3)
+
+        fig.savefig(out_path, dpi=150)
+        plt.close(fig)
+        self.get_logger().info(f'Trial PNG 저장 완료: {out_path}')
 
 
 def main(args=None):
