@@ -96,11 +96,10 @@ class DockingAccuracyTestNode(Node):
         self._latest_dock_pose = None    # PoseStamped (dock target)
         self._footprint_shape = None     # 상대 footprint polygon [(x, y), ...]
 
-        # 경로 버퍼 (trial별)
+        # 경로 버퍼 (trial별, GT만)
         self._gt_path_points = []    # [[(x, y), ...], ...]
-        self._mcl_path_points = []   # [[(x, y), ...], ...]
         self._current_trial = -1
-        self._last_path_sample_time = 0.0
+        self._last_gt_sample_time = 0.0
 
         # 결과 데이터
         self._results = []  # dict 목록
@@ -199,7 +198,6 @@ class DockingAccuracyTestNode(Node):
     def _mcl_callback(self, msg: PoseWithCovarianceStamped):
         with self._data_lock:
             self._latest_mcl = msg
-            self._maybe_sample_path_mcl(msg)
 
     def _dock_pose_callback(self, msg: PoseStamped):
         with self._data_lock:
@@ -212,9 +210,18 @@ class DockingAccuracyTestNode(Node):
         with self._data_lock:
             if self._footprint_shape is not None:
                 return  # one-shot latch
+            if self._latest_gt is None:
+                return  # GT 없으면 상대 변환 불가, 다음 콜백에서 재시도
+            robot_x = self._latest_gt.pose.pose.position.x
+            robot_y = self._latest_gt.pose.pose.position.y
+            robot_yaw = quaternion_to_yaw(self._latest_gt.pose.pose.orientation)
             pts = []
             for pt in msg.polygon.points:
-                pts.append((pt.x, pt.y))
+                # 절대 좌표 → 로봇 body frame 상대 좌표로 변환
+                dx = pt.x - robot_x
+                dy = pt.y - robot_y
+                rx, ry = rotate_point(dx, dy, -robot_yaw)
+                pts.append((rx, ry))
             self._footprint_shape = pts
         self.get_logger().info(
             f'footprint 캡처 완료: {len(self._footprint_shape)}개 꼭지점'
@@ -225,22 +232,14 @@ class DockingAccuracyTestNode(Node):
     def _maybe_sample_path_gt(self, msg: Odometry):
         """GT 경로 포인트 샘플링 (10Hz, lock 내부에서 호출)."""
         now = self.get_clock().now().nanoseconds * 1e-9
-        if now - self._last_path_sample_time < PATH_SAMPLE_INTERVAL:
+        if now - self._last_gt_sample_time < PATH_SAMPLE_INTERVAL:
             return
         if self._current_trial < 0 or self._current_trial >= len(self._gt_path_points):
             return
         x = msg.pose.pose.position.x
         y = msg.pose.pose.position.y
         self._gt_path_points[self._current_trial].append((x, y))
-        self._last_path_sample_time = now
-
-    def _maybe_sample_path_mcl(self, msg: PoseWithCovarianceStamped):
-        """MCL 경로 포인트 샘플링 (lock 내부에서 호출)."""
-        if self._current_trial < 0 or self._current_trial >= len(self._mcl_path_points):
-            return
-        x = msg.pose.pose.position.x
-        y = msg.pose.pose.position.y
-        self._mcl_path_points[self._current_trial].append((x, y))
+        self._last_gt_sample_time = now
 
     # ─── CSV ─────────────────────────────────────────────────────
 
@@ -313,7 +312,6 @@ class DockingAccuracyTestNode(Node):
             with self._data_lock:
                 self._current_trial = trial_idx
                 self._gt_path_points.append([])
-                self._mcl_path_points.append([])
 
             # 2. 원점 복귀
             self.get_logger().info('원점으로 이동 중...')
@@ -594,7 +592,6 @@ class DockingAccuracyTestNode(Node):
         # 3. 각 trial GT 경로 (LINE_STRIP, 빨강)
         with self._data_lock:
             gt_paths = [list(p) for p in self._gt_path_points]
-            mcl_paths = [list(p) for p in self._mcl_path_points]
 
         for i, pts in enumerate(gt_paths):
             if len(pts) < 2:
@@ -611,31 +608,6 @@ class DockingAccuracyTestNode(Node):
             m.color.r = 1.0
             m.color.g = 0.0
             m.color.b = 0.0
-            m.color.a = 0.8
-            for px, py in pts:
-                p = Point()
-                p.x = px
-                p.y = py
-                p.z = 0.05
-                m.points.append(p)
-            marker_array.markers.append(m)
-
-        # 4. 각 trial MCL 경로 (LINE_STRIP, 파랑)
-        for i, pts in enumerate(mcl_paths):
-            if len(pts) < 2:
-                continue
-            m = Marker()
-            m.header.frame_id = 'map'
-            m.header.stamp = self.get_clock().now().to_msg()
-            m.ns = 'mcl_path'
-            m.id = marker_id
-            marker_id += 1
-            m.type = Marker.LINE_STRIP
-            m.action = Marker.ADD
-            m.scale.x = 0.015
-            m.color.r = 0.0
-            m.color.g = 0.0
-            m.color.b = 1.0
             m.color.a = 0.8
             for px, py in pts:
                 p = Point()
@@ -819,15 +791,25 @@ class DockingAccuracyTestNode(Node):
 
         with self._data_lock:
             footprint_shape = self._footprint_shape
+            gt_paths = [list(p) for p in self._gt_path_points]
 
         for i, row in enumerate(self._results):
             color = colors[i % len(colors)]
 
-            # GT footprint polygon 그리기
-            if (
-                not math.isnan(row['gt_x'])
-                and footprint_shape is not None
-            ):
+            # GT 경로 선
+            if i < len(gt_paths) and len(gt_paths[i]) >= 2:
+                xs = [p[0] for p in gt_paths[i]]
+                ys = [p[1] for p in gt_paths[i]]
+                ax1.plot(
+                    xs, ys,
+                    '-', color=color, linewidth=1.2, alpha=0.7,
+                    label=f'Trial {row["trial"]} path',
+                )
+                # 시작점 ○
+                ax1.plot(xs[0], ys[0], 'o', color=color, markersize=5, zorder=6)
+
+            # GT 최종 footprint polygon (body frame 상대좌표 → gt_pose로 변환)
+            if not math.isnan(row['gt_x']) and footprint_shape is not None:
                 transformed = []
                 for fx, fy in footprint_shape:
                     rx, ry = rotate_point(fx, fy, row['gt_yaw'])
@@ -837,22 +819,13 @@ class DockingAccuracyTestNode(Node):
                     closed=True,
                     facecolor=color,
                     edgecolor=color,
-                    alpha=0.4,
-                    label=f'Trial {row["trial"]} GT footprint',
+                    alpha=0.5,
                 )
                 ax1.add_patch(poly)
             elif not math.isnan(row['gt_x']):
                 ax1.plot(
                     row['gt_x'], row['gt_y'],
                     'o', color=color, markersize=8, alpha=0.8,
-                    label=f'Trial {row["trial"]} GT',
-                )
-
-            # MCL 도착 위치 × 마커
-            if not math.isnan(row['mcl_x']):
-                ax1.plot(
-                    row['mcl_x'], row['mcl_y'],
-                    'x', color=color, markersize=10, markeredgewidth=2,
                 )
 
         ax1.legend(loc='upper left', fontsize=7)
