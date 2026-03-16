@@ -241,9 +241,11 @@ class DockingAccuracyTestNode(Node):
 
         # 파라미터
         self.declare_parameter('n_trials', 5)
-        self.declare_parameter('auto_proceed_timeout', 30)
+        self.declare_parameter('auto_proceed_timeout', 3.0)
+        self.declare_parameter('input_check_interval', 0.5)
         self._n_trials = self.get_parameter('n_trials').value
         self._auto_proceed_timeout = self.get_parameter('auto_proceed_timeout').value
+        self._input_check_interval = self.get_parameter('input_check_interval').value
 
         # 최신 센서 데이터
         self._latest_gt = None           # Odometry (GT)
@@ -529,23 +531,19 @@ class DockingAccuracyTestNode(Node):
             # 10. 사용자 입력 대기 (타임아웃 시 자동 진행)
             if trial_idx < self._n_trials - 1:
                 timeout = self._auto_proceed_timeout
+                interval = self._input_check_interval
                 self.get_logger().info(
                     f"Enter: 다음 테스트 | 'q'+Enter: 종료 "
-                    f"| {timeout}초 후 자동 진행"
+                    f"| {timeout:.1f}초 후 자동 진행"
                 )
                 self._input_event.clear()
-                elapsed = 0
-                check_interval = 5
+                elapsed = 0.0
                 while elapsed < timeout:
                     remain = timeout - elapsed
-                    got = self._input_event.wait(timeout=min(check_interval, remain))
+                    got = self._input_event.wait(timeout=min(interval, remain))
                     if got:
                         break
-                    elapsed += check_interval
-                    if elapsed < timeout:
-                        self.get_logger().info(
-                            f'입력 대기 중... ({timeout - elapsed}초 후 자동 진행)'
-                        )
+                    elapsed += interval
 
                 if not self._input_event.is_set():
                     self.get_logger().info('타임아웃: 자동으로 다음 테스트를 진행합니다.')
