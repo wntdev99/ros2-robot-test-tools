@@ -96,10 +96,11 @@ class DockingAccuracyTestNode(Node):
         self._latest_dock_pose = None    # PoseStamped (dock target)
         self._footprint_shape = None     # 상대 footprint polygon [(x, y), ...]
 
-        # 경로 버퍼 (trial별, GT만)
+        # 경로 버퍼 (trial별, GT만, 도킹 중에만 수집)
         self._gt_path_points = []    # [[(x, y), ...], ...]
         self._current_trial = -1
         self._last_gt_sample_time = 0.0
+        self._collecting_path = False  # 도킹 action 중에만 True
 
         # 결과 데이터
         self._results = []  # dict 목록
@@ -230,7 +231,9 @@ class DockingAccuracyTestNode(Node):
     # ─── 경로 샘플링 ─────────────────────────────────────────────
 
     def _maybe_sample_path_gt(self, msg: Odometry):
-        """GT 경로 포인트 샘플링 (10Hz, lock 내부에서 호출)."""
+        """GT 경로 포인트 샘플링 (도킹 중에만, 10Hz, lock 내부에서 호출)."""
+        if not self._collecting_path:
+            return
         now = self.get_clock().now().nanoseconds * 1e-9
         if now - self._last_gt_sample_time < PATH_SAMPLE_INTERVAL:
             return
@@ -319,13 +322,18 @@ class DockingAccuracyTestNode(Node):
             if not nav_success:
                 self.get_logger().warn('원점 이동 실패. 계속 진행합니다.')
 
-            # 3. dock_pose 초기화
+            # 3. dock_pose 초기화, 경로 수집 시작
             with self._data_lock:
                 self._latest_dock_pose = None
+                self._collecting_path = True
 
             # 4. DockRobot action 전송
             self.get_logger().info('도킹 시도 중...')
             dock_success = self._dock_robot()
+
+            # 도킹 완료 후 경로 수집 중지
+            with self._data_lock:
+                self._collecting_path = False
 
             # 5, 6, 7. 스냅샷 수집
             with self._data_lock:
