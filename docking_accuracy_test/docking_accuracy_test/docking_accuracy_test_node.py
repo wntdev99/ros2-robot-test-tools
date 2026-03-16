@@ -144,7 +144,8 @@ def _entrance_angle_data(tf_abs):
     diff = wrap_to_pi(theta_end - theta_start)
 
     return dict(cx=cx, cy=cy, sp1=sp1, sp2=sp2,
-                angle_deg=angle_deg, theta_start=theta_start, diff=diff)
+                angle_deg=angle_deg, theta_start=theta_start, diff=diff,
+                fp1=fp1, fp2=fp2)
 
 
 def compute_entrance_angle_deg(footprint_shape, gt_x, gt_y, gt_yaw) -> float:
@@ -155,6 +156,45 @@ def compute_entrance_angle_deg(footprint_shape, gt_x, gt_y, gt_yaw) -> float:
         tf.append((gt_x + rx, gt_y + ry))
     data = _entrance_angle_data(tf)
     return data['angle_deg'] if data is not None else float('nan')
+
+
+def _compute_dock_alignment(tf_abs):
+    """dock line 중심과 front_face 중심 사이의 x/y/yaw 오차 계산.
+    _entrance_angle_data 결과를 재사용 (중복 계산 없음).
+    """
+    data = _entrance_angle_data(tf_abs)
+    if data is None:
+        return None
+
+    # front_face 끝점 및 중심
+    fp1, fp2 = data['fp1'], data['fp2']
+    face_cx = (fp1[0] + fp2[0]) / 2.0
+    face_cy = (fp1[1] + fp2[1]) / 2.0
+
+    # front_face 길이 → dock line 반길이
+    fv_len = math.sqrt((fp2[0] - fp1[0])**2 + (fp2[1] - fp1[1])**2)
+    dock_half_len = fv_len / 2.0
+
+    # dock line 중심
+    # x: V 입구선 x (완벽 도킹 시 front_face가 위치해야 하는 고정 x)
+    # y: V 대칭축 y = (V_SHAPE_LEFT[1] + V_SHAPE_RIGHT[1]) / 2
+    dock_line_cx = V_SHAPE_LEFT[0]  # == V_SHAPE_RIGHT[0] == 3.25
+    dock_line_cy = (V_SHAPE_LEFT[1] + V_SHAPE_RIGHT[1]) / 2.0
+
+    dx_cm = (dock_line_cx - face_cx) * 100.0
+    dy_cm = (dock_line_cy - face_cy) * 100.0
+    yaw_deg_signed = math.degrees(data['diff'])  # 부호 있는 각도
+
+    return dict(
+        dock_line_cx=dock_line_cx,
+        dock_line_cy=dock_line_cy,
+        dock_half_len=dock_half_len,
+        face_cx=face_cx,
+        face_cy=face_cy,
+        dx_cm=dx_cm,
+        dy_cm=dy_cm,
+        yaw_deg_signed=yaw_deg_signed,
+    )
 
 
 def _draw_entrance_angle(ax, tf_abs):
@@ -185,6 +225,39 @@ def _draw_entrance_angle(ax, tf_abs):
     ax.text(tx, ty, f'{angle_deg:.1f}°', fontsize=9, color='magenta',
             ha='center', va='center', zorder=11,
             bbox=dict(facecolor='white', alpha=0.7, edgecolor='none', pad=1))
+
+
+def _draw_dock_alignment(ax, tf_abs, color, y_offset=0.0):
+    """dock line(cyan), front_face 중심 마커, 정렬 오차 텍스트를 ax에 그린다."""
+    aln = _compute_dock_alignment(tf_abs)
+    if aln is None:
+        return
+
+    # dock line: V입구선과 평행(y축 방향) → x 고정, y ± half_len
+    dl_x  = aln['dock_line_cx']
+    dl_cy = aln['dock_line_cy']
+    hl    = aln['dock_half_len']
+    ax.plot([dl_x, dl_x], [dl_cy - hl, dl_cy + hl],
+            color='cyan', linewidth=2.5, solid_capstyle='round',
+            zorder=8, label='_nolegend_')
+    ax.plot(dl_x, dl_cy, 'o', color='cyan', markersize=5, zorder=9)
+
+    # front_face 중심 마커 (×)
+    ax.plot(aln['face_cx'], aln['face_cy'],
+            'x', color=color, markersize=8, markeredgewidth=2.0, zorder=10)
+
+    # 오차 텍스트 — V-shape 위쪽(y > V_SHAPE_LEFT[1])에 배치하여 footprint와 겹침 방지
+    label = (
+        f'Δx={aln["dx_cm"]:+.1f}cm\n'
+        f'Δy={aln["dy_cm"]:+.1f}cm\n'
+        f'Δyaw={aln["yaw_deg_signed"]:+.1f}°'
+    )
+    text_x = dl_x - 0.05
+    text_y = max(V_SHAPE_LEFT[1], V_SHAPE_RIGHT[1]) + 0.14 + y_offset
+    ax.text(text_x, text_y, label,
+            fontsize=7.5, color='cyan', ha='center', va='bottom', zorder=11,
+            bbox=dict(facecolor='#111111', alpha=0.75, edgecolor='cyan',
+                      linewidth=0.8, pad=3))
 
 
 class DockingAccuracyTestNode(Node):
@@ -960,13 +1033,34 @@ class DockingAccuracyTestNode(Node):
             # V자 입구 선 → 최근접 꼭지점에 평행이동 + 앞부분 라인과 각도 표시
             if tf is not None:
                 if not entrance_ref_labeled:
-                    # legend용 더미 선 (magenta)
+                    # legend용 더미 선 (magenta, cyan)
                     ax1.plot([], [], color='magenta', linewidth=2,
                              label='Entrance ref + angle')
+                    ax1.plot([], [], color='cyan', linewidth=2.5,
+                             label='Dock line + alignment error')
                     entrance_ref_labeled = True
                 _draw_entrance_angle(ax1, tf)
+                _draw_dock_alignment(ax1, tf, color, y_offset=i * 0.14)
 
-        ax1.legend(loc='upper left', fontsize=7)
+        # top-down view: 데이터 범위에 맞게 자동 줌
+        _bx = [V_SHAPE_TIP[0], V_SHAPE_LEFT[0], V_SHAPE_RIGHT[0]]
+        _by = [V_SHAPE_TIP[1], V_SHAPE_LEFT[1], V_SHAPE_RIGHT[1]]
+        for _path in gt_paths:
+            _bx += [p[0] for p in _path]
+            _by += [p[1] for p in _path]
+        for _r in self._results:
+            if not math.isnan(_r['gt_x']):
+                _bx.append(_r['gt_x'])
+                _by.append(_r['gt_y'])
+        if _bx:
+            _xpad, _ypad = 0.4, 0.55
+            ax1.set_xlim(min(_bx) - _xpad, max(_bx) + _xpad)
+            _yctr = (max(_by) + min(_by)) / 2.0
+            _yhalf = max((max(_by) - min(_by)) / 2.0 + _ypad, 0.75)
+            ax1.set_ylim(_yctr - _yhalf, _yctr + _yhalf)
+
+        ax1.legend(loc='lower left', fontsize=7.5,
+                   framealpha=0.85, edgecolor='gray')
 
         # ── subplot 2: GT x/y 오차 막대 그래프 (우측 상단) ──────
         ax2 = fig.add_subplot(gs[0, 1])
