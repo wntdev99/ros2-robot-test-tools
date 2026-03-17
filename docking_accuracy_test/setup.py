@@ -22,6 +22,7 @@ setup(
     entry_points={
         'console_scripts': [
             'docking_accuracy_test_node = docking_accuracy_test.docking_accuracy_test_node:main',
+            'gt_localization_node = docking_accuracy_test.gt_localization_node:main',
         ],
     },
 )

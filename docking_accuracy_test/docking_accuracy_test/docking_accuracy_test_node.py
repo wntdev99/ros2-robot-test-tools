@@ -49,6 +49,9 @@ ERROR_YELLOW_THRESHOLD = 0.10  # m
 # 경로 샘플링 간격 (초)
 PATH_SAMPLE_INTERVAL = 0.1
 
+# 이상 데이터 판별 임계값 (xy 유클리드 오차)
+OUTLIER_XY_THRESHOLD = 0.10  # m (10 cm)
+
 
 def quaternion_to_yaw(q: Quaternion) -> float:
     """쿼터니언을 yaw(라디안)로 변환."""
@@ -398,7 +401,7 @@ class DockingAccuracyTestNode(Node):
     # ─── CSV ─────────────────────────────────────────────────────
 
     _CSV_FIELDS = [
-        'trial', 'dock_success',
+        'trial', 'dock_success', 'is_outlier',
         'target_x', 'target_y', 'target_yaw',
         'gt_x', 'gt_y', 'gt_yaw',
         'mcl_x', 'mcl_y', 'mcl_yaw',
@@ -692,9 +695,18 @@ class DockingAccuracyTestNode(Node):
         def yaw_err(tyaw, ryaw):
             return nan if (math.isnan(tyaw) or math.isnan(ryaw)) else wrap_to_pi(tyaw - ryaw)
 
+        # 이상 데이터 판별: xy 유클리드 오차 > OUTLIER_XY_THRESHOLD
+        _xe = axis_err(target_x, gt_x)
+        _ye = axis_err(target_y, gt_y)
+        if math.isnan(_xe) or math.isnan(_ye):
+            is_outlier = False
+        else:
+            is_outlier = math.sqrt(_xe ** 2 + _ye ** 2) > OUTLIER_XY_THRESHOLD
+
         row = {
             'trial': trial,
             'dock_success': dock_success,
+            'is_outlier': is_outlier,
             'target_x': target_x,
             'target_y': target_y,
             'target_yaw': target_yaw,
@@ -805,10 +817,13 @@ class DockingAccuracyTestNode(Node):
                 continue
 
             # 오차에 따른 색상 (xy 유클리드 거리로 계산)
+            # 이상 데이터는 보라색으로 별도 표시
             gx_e = row['gt_x_error_m']
             gy_e = row['gt_y_error_m']
             xy_err = math.sqrt(gx_e**2 + gy_e**2) if not (math.isnan(gx_e) or math.isnan(gy_e)) else float('nan')
-            if math.isnan(xy_err):
+            if row['is_outlier']:
+                r, g, b = 0.6, 0.0, 0.8   # 보라색: 이상 데이터
+            elif math.isnan(xy_err):
                 r, g, b = 0.5, 0.5, 0.5
             elif xy_err < ERROR_GREEN_THRESHOLD:
                 r, g, b = 0.0, 1.0, 0.0
@@ -859,7 +874,8 @@ class DockingAccuracyTestNode(Node):
             err_str = (
                 f'NaN' if math.isnan(xy_err) else f'{xy_err*100:.1f}cm'
             )
-            txt.text = f'T{row["trial"]}: {err_str}'
+            outlier_tag = '[OUT] ' if row['is_outlier'] else ''
+            txt.text = f'{outlier_tag}T{row["trial"]}: {err_str}'
             marker_array.markers.append(txt)
 
         self._marker_pub.publish(marker_array)
@@ -890,22 +906,36 @@ class DockingAccuracyTestNode(Node):
             return
 
         # 통계 계산
-        def vld(key):
-            return [r[key] for r in self._results if not math.isnan(r[key])]
+        normal = [r for r in self._results if not r['is_outlier']]
+        outlier_rows = [r for r in self._results if r['is_outlier']]
+
+        def vld(key, rows=None):
+            src = rows if rows is not None else self._results
+            return [r[key] for r in src if not math.isnan(r[key])]
 
         def mean(lst):
             return sum(lst) / len(lst) if lst else float('nan')
 
+        outlier_trials = [r['trial'] for r in outlier_rows]
+        outlier_info = (
+            f'이상 데이터 ({len(outlier_rows)}회): '
+            f'Trial {outlier_trials}\n'
+            if outlier_rows else '이상 데이터: 없음\n'
+        )
+
         self.get_logger().info(
             f'\n{"="*50}\n'
-            f'=== 테스트 완료: {len(self._results)}회 ===\n'
-            f'GT  평균 x 오차:   {mean(vld("gt_x_error_m"))*100:.2f} cm\n'
-            f'GT  평균 y 오차:   {mean(vld("gt_y_error_m"))*100:.2f} cm\n'
-            f'GT  평균 yaw 오차: {math.degrees(mean([abs(v) for v in vld("gt_yaw_error_rad")])):.2f} deg\n'
-            f'MCL 평균 x 오차:   {mean(vld("mcl_x_error_m"))*100:.2f} cm\n'
-            f'MCL 평균 y 오차:   {mean(vld("mcl_y_error_m"))*100:.2f} cm\n'
-            f'MCL 평균 yaw 오차: {math.degrees(mean([abs(v) for v in vld("mcl_yaw_error_rad")])):.2f} deg\n'
-            f'평균 입구 각도:    {mean(vld("entrance_angle_deg")):.2f} deg\n'
+            f'=== 테스트 완료: {len(self._results)}회 '
+            f'(정상 {len(normal)}회 / 이상 {len(outlier_rows)}회) ===\n'
+            f'{outlier_info}'
+            f'--- 정상 데이터 통계 (이상 제외) ---\n'
+            f'GT  평균 x 오차:   {mean(vld("gt_x_error_m", normal))*100:.2f} cm\n'
+            f'GT  평균 y 오차:   {mean(vld("gt_y_error_m", normal))*100:.2f} cm\n'
+            f'GT  평균 yaw 오차: {math.degrees(mean([abs(v) for v in vld("gt_yaw_error_rad", normal)])):.2f} deg\n'
+            f'MCL 평균 x 오차:   {mean(vld("mcl_x_error_m", normal))*100:.2f} cm\n'
+            f'MCL 평균 y 오차:   {mean(vld("mcl_y_error_m", normal))*100:.2f} cm\n'
+            f'MCL 평균 yaw 오차: {math.degrees(mean([abs(v) for v in vld("mcl_yaw_error_rad", normal)])):.2f} deg\n'
+            f'평균 입구 각도:    {mean(vld("entrance_angle_deg", normal)):.2f} deg\n'
             f'CSV: {self._csv_path}\n'
             f'PNG: {self._png_path}\n'
             f'{"="*50}'
@@ -989,14 +1019,17 @@ class DockingAccuracyTestNode(Node):
         aln_list = []
 
         for i, row in enumerate(self._results):
-            color = colors[i % len(colors)]
+            color = '#888888' if row['is_outlier'] else colors[i % len(colors)]
 
             # GT 경로 (도킹 중 궤적, 점선)
             if i < len(gt_paths) and len(gt_paths[i]) >= 2:
                 xs = [p[0] for p in gt_paths[i]]
                 ys = [p[1] for p in gt_paths[i]]
+                label = f'Trial {row["trial"]} path'
+                if row['is_outlier']:
+                    label += ' [OUT]'
                 ax1.plot(xs, ys, '--', color=color, linewidth=1.5, alpha=0.85,
-                         label=f'Trial {row["trial"]} path', zorder=6)
+                         label=label, zorder=6)
                 ax1.plot(xs[0], ys[0], 'o', color=color, markersize=5, zorder=7)
 
             if math.isnan(row['gt_x']):
@@ -1091,16 +1124,23 @@ class DockingAccuracyTestNode(Node):
         ax2.set_title('GT X Error per Trial')
 
         trial_nums = [r['trial'] for r in self._results]
-        gt_x_cm = [r['gt_x_error_m'] * 100 for r in self._results]
-        gt_y_cm = [r['gt_y_error_m'] * 100 for r in self._results]
+        gt_x_cm    = [r['gt_x_error_m'] * 100 for r in self._results]
+        gt_y_cm    = [r['gt_y_error_m'] * 100 for r in self._results]
+        is_outlier = [r['is_outlier'] for r in self._results]
 
         x = np.arange(len(trial_nums))
         w = min(0.45, 0.7 / max(len(trial_nums), 1))
 
-        ax2.bar(x, gt_x_cm, w, label='GT x [cm]', color='#e74c3c', alpha=0.85)
+        bar_colors_x = ['#888888' if o else '#e74c3c' for o in is_outlier]
+        bars_x = ax2.bar(x, gt_x_cm, w, color=bar_colors_x, alpha=0.85)
+        # 이상 데이터 막대에 해치 패턴
+        for bar, o in zip(bars_x, is_outlier):
+            if o:
+                bar.set_hatch('//')
         ax2.axhline(0, color='black', linewidth=0.8, alpha=0.4)
-
-        abs_x = [abs(v) for v in gt_x_cm if not math.isnan(v)]
+        # 통계선: 정상 데이터만 사용
+        abs_x = [abs(v) for v, o in zip(gt_x_cm, is_outlier)
+                 if not o and not math.isnan(v)]
         if abs_x:
             abs_mean = sum(abs_x) / len(abs_x)
             abs_max  = max(abs_x)
@@ -1111,6 +1151,11 @@ class DockingAccuracyTestNode(Node):
                          label=f'|max|  ({abs_max:.2f} cm)')
             ax2.axhline( abs_min,  color='#a93226', linestyle=':',  linewidth=1.2, alpha=0.8,
                          label=f'|min|  ({abs_min:.2f} cm)')
+        # 이상 데이터 범례 패치
+        import matplotlib.patches as mpatches_bar
+        if any(is_outlier):
+            ax2.add_patch(mpatches_bar.Patch(
+                facecolor='#888888', hatch='//', label='Outlier (>10 cm)'))
 
         ax2.set_xlabel('Trial')
         ax2.set_ylabel('Error [cm] (signed)')
@@ -1124,10 +1169,14 @@ class DockingAccuracyTestNode(Node):
         ax3 = fig.add_subplot(inner_gs[1])
         ax3.set_title('GT Y Error per Trial')
 
-        ax3.bar(x, gt_y_cm, w, label='GT y [cm]', color='#2980b9', alpha=0.85)
+        bar_colors_y = ['#888888' if o else '#2980b9' for o in is_outlier]
+        bars_y = ax3.bar(x, gt_y_cm, w, color=bar_colors_y, alpha=0.85)
+        for bar, o in zip(bars_y, is_outlier):
+            if o:
+                bar.set_hatch('//')
         ax3.axhline(0, color='black', linewidth=0.8, alpha=0.4)
-
-        abs_y = [abs(v) for v in gt_y_cm if not math.isnan(v)]
+        abs_y = [abs(v) for v, o in zip(gt_y_cm, is_outlier)
+                 if not o and not math.isnan(v)]
         if abs_y:
             abs_mean = sum(abs_y) / len(abs_y)
             abs_max  = max(abs_y)
@@ -1138,6 +1187,9 @@ class DockingAccuracyTestNode(Node):
                          label=f'|max|  ({abs_max:.2f} cm)')
             ax3.axhline( abs_min,  color='#1a5276', linestyle=':',  linewidth=1.2, alpha=0.8,
                          label=f'|min|  ({abs_min:.2f} cm)')
+        if any(is_outlier):
+            ax3.add_patch(mpatches_bar.Patch(
+                facecolor='#888888', hatch='//', label='Outlier (>10 cm)'))
 
         ax3.set_xlabel('Trial')
         ax3.set_ylabel('Error [cm] (signed)')
@@ -1152,12 +1204,14 @@ class DockingAccuracyTestNode(Node):
         ax4.set_title('GT Yaw Error per Trial')
 
         gt_yaw_deg = [r['gt_yaw_error_rad'] * 180 / math.pi for r in self._results]
-
-        ax4.bar(x, gt_yaw_deg, min(0.45, 0.7 / max(len(trial_nums), 1)),
-                label='GT yaw [deg]', color='#e67e22', alpha=0.85)
+        bar_colors_yaw = ['#888888' if o else '#e67e22' for o in is_outlier]
+        bars_yaw = ax4.bar(x, gt_yaw_deg, w, color=bar_colors_yaw, alpha=0.85)
+        for bar, o in zip(bars_yaw, is_outlier):
+            if o:
+                bar.set_hatch('//')
         ax4.axhline(0, color='black', linewidth=0.8, alpha=0.4)
-
-        abs_yaw = [abs(v) for v in gt_yaw_deg if not math.isnan(v)]
+        abs_yaw = [abs(v) for v, o in zip(gt_yaw_deg, is_outlier)
+                   if not o and not math.isnan(v)]
         if abs_yaw:
             abs_mean = sum(abs_yaw) / len(abs_yaw)
             abs_max  = max(abs_yaw)
@@ -1168,6 +1222,9 @@ class DockingAccuracyTestNode(Node):
                          label=f'|max|  ({abs_max:.2f}°)')
             ax4.axhline( abs_min,  color='#b7510c', linestyle=':',  linewidth=1.2, alpha=0.8,
                          label=f'|min|  ({abs_min:.2f}°)')
+        if any(is_outlier):
+            ax4.add_patch(mpatches_bar.Patch(
+                facecolor='#888888', hatch='//', label='Outlier (>10 cm)'))
 
         ax4.set_xlabel('Trial')
         ax4.set_ylabel('Error [deg] (signed)')
@@ -1185,9 +1242,10 @@ class DockingAccuracyTestNode(Node):
         """x·y·yaw 각 축의 best(오차 최소) / worst(오차 최대) trial PNG 6개 저장."""
         valid = [
             (i, r) for i, r in enumerate(self._results)
-            if not (math.isnan(r['gt_x_error_m'])
-                    or math.isnan(r['gt_y_error_m'])
-                    or math.isnan(r['gt_yaw_error_rad']))
+            if not r['is_outlier']
+            and not (math.isnan(r['gt_x_error_m'])
+                     or math.isnan(r['gt_y_error_m'])
+                     or math.isnan(r['gt_yaw_error_rad']))
         ]
         if not valid:
             self.get_logger().warn('Best/Worst PNG: 유효한 결과 없음.')
