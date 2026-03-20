@@ -8,7 +8,7 @@ class VShapePosePublisher(Node):
         super().__init__('v_shape_pose_publisher')
 
         self.publisher_ = self.create_publisher(PoseStamped, '/v_shape_pose', 10)
-        self.timer = self.create_timer(1.0, self.timer_callback)
+        self.timer = self.create_timer(0.05, self.timer_callback)
         self.get_logger().info('V-shape pose publisher started (sim_time)')
 
     def timer_callback(self):
